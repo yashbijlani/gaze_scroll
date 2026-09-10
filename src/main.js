@@ -189,15 +189,11 @@ function scrollContext() {
 
 function trackingLabel(sample) {
   if (!trackingRunning && !replaying) return 'idle';
-  if (analysis_lost()) return 'lost';
+  if (eventDetector.lost) return 'lost';
   if ((sample?.confidence ?? 0) < (CONFIG.intent.minConfidence ?? 0.35)) return 'low confidence';
   if (!autoScroll) return 'tracking (scroll off)';
   if (scrollController.overridden()) return 'paused (manual override)';
   return 'tracking';
-}
-
-function analysis_lost() {
-  return latestSnapshot == null && !trackingRunning ? false : eventDetector.lost;
 }
 
 function calQualityLabel() {

@@ -1,8 +1,16 @@
 # Gaze Scroll — Architecture
 
 An experimental, browser-only system that estimates where a user is looking using a
-laptop webcam and (eventually) scrolls a page based on gaze. **This document covers
-the MVP**, which does everything up to — but not including — automatic scrolling.
+laptop webcam and scrolls the page from inferred intent. Pipeline:
+
+```
+webcam → gaze provider → filter → event detector → intent engine
+       → scroll controller → webpage (with DOM-awareness feedback)
+```
+
+Phase 0 (MVP: track + calibrate + log, no auto-scroll) is complete; this
+document covers the full experimental system. Heuristics live in
+ALGORITHMS.md, comparison protocol in EXPERIMENTS.md.
 
 ---
 
@@ -134,15 +142,19 @@ subject of the first post-MVP milestone.
 
 ---
 
-## 2. MVP Goals (what this scaffold does)
+## 2. System goals (current)
 
 1. Request webcam permission behind an explicit consent gate.
-2. Initialize eye tracking (WebGazer).
-3. Show a small, optional camera/debug overlay.
-4. Visualize the estimated (smoothed) gaze position.
-5. Provide a click-through calibration flow.
-6. Log gaze coordinates + a derived confidence proxy.
-7. **Do NOT scroll automatically** (explicit non-goal for this milestone).
+2. Initialize eye tracking behind a swappable `GazeProvider` interface.
+3. Show camera/debug overlay + floating tracking pill.
+4. Guided calibration (5/9-pt) with a quality score, skippable.
+5. Filter (One Euro) → velocity/persistence → discrete gaze events.
+6. Intent engine: evidence-weighted states with hysteresis + confidence.
+7. Scroll controller: discrete/smooth/edge/reading/predictive modes with
+   manual override and emergency stop.
+8. Gaze Lab: live signals, trajectory, events, parameters, recording.
+9. Session record/export/replay driving the identical pipeline, no camera.
+10. Privacy: on-device only, no frames stored or sent, explicit exports.
 
 ---
 
@@ -151,50 +163,92 @@ subject of the first post-MVP milestone.
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                            index.html                              │
-│  consent gate · status · controls · content area · log panel      │
+│  consent gate · status · controls · content · log · scrollctl      │
+│  gaze lab (signals, trajectory, params, sessions, replay) · pill   │
 └───────────────────────────────┬────────────────────────────────────┘
                                 │ module graph (ESM)
-        ┌───────────────────────┼───────────────────────────┐
-        ▼                       ▼                            ▼
+        ┌───────────────────────┼───────────────────────────────────┐
+        ▼                       ▼                                   ▼
 ┌───────────────┐     ┌───────────────────┐     ┌───────────────────────┐
 │   main.js     │     │    overlay.js     │     │     calibration.js    │
-│  app/state    │     │  camera preview   │     │  N-point grid flow    │
-│  wiring       │     │  gaze cursor      │     │  → tracker.record()   │
-└──────┬────────┘     └─────────┬─────────┘     └───────────┬───────────┘
-       │                        │                           │
-       ▼                        │                           │
+│  app/state +  │     │  camera preview   │     │  guided N-point flow  │
+│  pipeline     │     │  gaze cursor      │     │  quality + skip       │
+│  wiring       │     │                   │     │                       │
+└──────┬────────┘     └───────────────────┘     └───────────┬───────────┘
+       │                                                   │
+       ▼                                                   ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│                            tracker.js                                │
-│  wraps window.webgazer: begin/end, subscribe(gaze listener),         │
-│  recordScreenPosition, clearData, pause/resume, confidence proxy      │
+│                       gaze/provider.js                               │
+│  GazeProvider → WebGazerProvider (tracker + smoother + confidence,   │
+│  normalized {timestamp,x,y,normalizedX,normalizedY,confidence})       │
+│               → MockProvider (scripted; tests + replay, no camera)    │
 └──────────────┬───────────────────────────────────────────────────────┘
-               │ raw sample {x, y, t, hasFace, confidence}
+               │ smoothed sample
                ▼
         ┌───────────────┐         ┌───────────────┐
-        │  smoothing.js │         │  fixation.js  │
-        │  One Euro     │         │  I-DT         │
+        │ gaze/velocity │         │  fixation.js  │
+        │ EMA + persist │         │  I-DT         │
         └───────┬───────┘         └───────┬───────┘
-                │  smoothed               │  fixation / saccade state
+                │                         │
                 ▼                         ▼
-        ┌───────────────────────────────────────────────┐
-        │                   logger.js                    │
-        │  ring buffer + console + CSV/JSON download     │
-        └───────────────────────────────────────────────┘
+        ┌─────────────────────────────────────────┐
+        │              gaze/events.js             │
+        │  FIXATION_*/MOVEMENT_*/EDGE_DWELL_*/    │
+        │  TRACKING_LOST/RECOVERED                │
+        └──────────────┬──────────────────────────┘
+                       │ analysis {fixation, velocity, edge}
+                       ▼
+        ┌─────────────────────────────────────────┐
+        │              gaze/intent.js             │◄── scroll position,
+        │  READING/LOOKING_UP/DOWN/SCANNING/      │    viewport, document
+        │  IDLE/UNCERTAIN/TRACKING_LOST +         │    limits
+        │  hysteresis + confidence gating         │
+        └──────────────┬──────────────────────────┘
+                       │ {intent, direction, confidence, signals}
+                       ▼
+        ┌─────────────────────────────────────────┐
+        │  gaze/dom.js + gaze/reading.js          │◄── elementFromPoint,
+        │  gaze target role · on-text ·           │    text-below scan
+        │  progression · near-end                 │
+        └──────────────┬──────────────────────────┘
+                       ▼
+        ┌─────────────────────────────────────────┐
+        │             gaze/scroll.js              │
+        │  discrete/smooth/edge/reading/          │
+        │  predictive/off · accel ramps ·         │
+        │  manual override · e-stop               │
+        └──────────────┬──────────────────────────┘
+                       │ scroll deltas
+                       ▼
+        ┌─────────────────────────────────────────┐
+        │  logger.js + gaze/session.js + lab.js   │
+        │  ring buffer/CSV · session JSON export  │
+        │  ReplayDriver → (same pipeline, no cam) │
+        └─────────────────────────────────────────┘
 ```
 
 ### 3.1 Modules
 
 | File | Responsibility |
 |---|---|
-| `src/config.js` | All tunable parameters (smoothing, fixation, logging, calibration). |
-| `src/camera.js` | `getUserMedia` capability detection, explicit permission request, stream lifecycle. |
+| `src/config.js` | All tunable parameters (smoothing, fixation, velocity, events, intent, scroll, calibration). |
+| `src/camera.js` | `getUserMedia` capability detection. |
 | `src/tracker.js` | WebGazer wrapper: init, gaze subscription, calibration recording, confidence proxy. |
+| `src/gaze/provider.js` | `GazeProvider` abstraction: `WebGazerProvider` (normalized stream) + `MockProvider` (tests/replay). |
+| `src/gaze/velocity.js` | EMA velocity/speed + direction persistence. |
 | `src/smoothing.js` | One Euro filter (per-axis) for low-lag jitter reduction. |
 | `src/fixation.js` | Dispersion-threshold (I-DT) fixation/saccade classifier. |
+| `src/gaze/events.js` | Discrete gaze events (fixation/movement/edge-dwell/tracking-loss). |
+| `src/gaze/intent.js` | Evidence-weighted intent + hysteresis + confidence gating. |
+| `src/gaze/dom.js` | `elementFromPoint` gaze-target roles + text-below scan. |
+| `src/gaze/reading.js` | Reading-progression tracker (fixation steps through text). |
+| `src/gaze/scroll.js` | Scroll strategies, accel ramps, override, e-stop. |
+| `src/gaze/session.js` | Session record/export + replay driver (no camera). |
 | `src/overlay.js` | Repositions WebGazer's camera preview; renders our own gaze cursor. |
-| `src/calibration.js` | Fullscreen N-point calibration flow. |
+| `src/calibration.js` | Guided N-point flow with quality score, skip, persistence. |
+| `src/lab.js` | Gaze Lab panel: signals, trajectory canvas, events, params. |
 | `src/logger.js` | In-memory ring buffer of samples; console + downloadable export. |
-| `src/main.js` | Bootstraps everything; owns the UI state machine. |
+| `src/main.js` | Bootstraps everything; owns the pipeline + UI state machine. |
 
 ### 3.2 Data flow (per gaze sample)
 
