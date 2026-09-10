@@ -22,6 +22,15 @@
           <button id="btn-recalibrate" disabled>Reset calibration</button>
         </div>
         <div class="btn-row">
+          <label>Points
+            <select id="sel-calpoints">
+              <option value="5">5-point (fast)</option>
+              <option value="9" selected>9-point (thorough)</option>
+            </select>
+          </label>
+          <button id="btn-skip-cal" disabled>Skip for now</button>
+        </div>
+        <div class="btn-row">
           <label><input type="checkbox" id="chk-video" checked /> Camera overlay</label>
           <label><input type="checkbox" id="chk-cursor" checked /> Gaze cursor</label>
         </div>
@@ -60,6 +69,52 @@
           it) and feeds them to WebGazer's ridge regression. Everyday clicks
           and cursor moves keep training it implicitly while you browse.
         </p>
+        <p>
+          Scroll mode is off by default. When you enable automatic scrolling
+          below, the system watches for sustained, confident downward or
+          upward gaze — brief glances never scroll. Your mouse wheel, keys,
+          or touch always override it instantly, and the red Stop button
+          kills it immediately.
+        </p>
+        <h3>Section two — giving the page room to scroll</h3>
+        <p>
+          This extra content exists so there is actually somewhere to go.
+          Read naturally from top to bottom. When your gaze works down
+          through the text and approaches the lower part of the window with
+          steady movement, a reading-aware mode should gently reveal the
+          next lines and stop the moment you settle back into reading.
+        </p>
+        <p>
+          If scrolling ever feels wrong — too eager, too sluggish, or just
+          surprising — that is data. Open the Gaze Lab, record a session,
+          and replay it against a different mode. The point of this build
+          is to compare strategies, not to declare one winner.
+        </p>
+        <h3>Section three — scanning versus reading</h3>
+        <p>
+          Try skimming quickly across headings versus settling on a
+          paragraph. Fast, broad movement should read as scanning and hold
+          the page still. Slow, stepwise downward fixations through body
+          text are the signature the reading mode looks for.
+        </p>
+        <p>
+          Edges are informative but weak evidence on their own. Looking at
+          the bottom chrome to check the time must not scroll the page; only
+          sustained, confident, downward-persisting gaze earns motion. When
+          in doubt the engine answers uncertain and does nothing.
+        </p>
+        <h3>Section four — the last stretch</h3>
+        <p>
+          You are nearly at the end of the sample. Gaze-driven scrolling
+          must respect document limits: pressing against the bottom of the
+          page with nowhere left to go should never claim intent. The
+          engine reports reading or idle there instead.
+        </p>
+        <p>
+          That is the whole tour. Recalibrate if accuracy drifts, export a
+          session when something interesting happens, and note the setup
+          (lighting, glasses, posture) alongside it.
+        </p>
       </article>
 
       <aside class="panel debug">
@@ -80,6 +135,114 @@
         </table>
       </aside>
     </main>
+
+    <!-- Scroll + session controls: the primary experience after calibration. -->
+    <section class="panel scrollctl">
+      <h2>Eye scrolling</h2>
+      <div class="btn-row">
+        <label>Mode
+          <select id="sel-mode">
+            <option value="smooth" selected>Smooth continuous</option>
+            <option value="discrete">Discrete steps</option>
+            <option value="edge">Gaze-edge</option>
+            <option value="reading">Reading-aware</option>
+            <option value="predictive">Predictive reveal</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="chk-autoscroll" /> Enable automatic scrolling</label>
+        <button id="btn-estop" class="danger">Stop scrolling</button>
+      </div>
+      <div class="btn-row">
+        <label>Sensitivity
+          <input type="range" id="rng-sensitivity" min="300" max="1500" step="50" value="900" />
+          <span class="muted" id="sensitivity-val">900 px/s</span>
+        </label>
+      </div>
+      <p class="muted small">Wheel, arrow/space keys, or touch override instantly. Scrolling needs sustained,
+        confident gaze — single glances never act. All processing is on-device; see privacy below.</p>
+    </section>
+
+    <!-- Gaze Lab: developer panel for experimentation. -->
+    <section class="panel lab" id="lab">
+      <h2>Gaze Lab <span class="muted">developer mode</span></h2>
+      <div class="lab-grid">
+        <div>
+          <h3>Live signals</h3>
+          <dl class="signals">
+            <dt>gaze px</dt><dd id="lab-gaze">—</dd>
+            <dt>normalized</dt><dd id="lab-norm">—</dd>
+            <dt>confidence</dt><dd id="lab-conf">—</dd>
+            <dt>velocity px/s</dt><dd id="lab-vel">—</dd>
+            <dt>persistence</dt><dd id="lab-persist">—</dd>
+            <dt>fixation</dt><dd id="lab-fix">—</dd>
+            <dt>direction</dt><dd id="lab-dir">—</dd>
+            <dt>intent</dt><dd id="lab-intent">—</dd>
+            <dt>intent conf</dt><dd id="lab-intentconf">—</dd>
+            <dt>scroll vel</dt><dd id="lab-scrollvel">—</dd>
+            <dt>tracking</dt><dd id="lab-tracking">idle</dd>
+            <dt>cal quality</dt><dd id="lab-calq">—</dd>
+            <dt>gaze target</dt><dd id="lab-target">—</dd>
+          </dl>
+          <h3>Intent signals</h3>
+          <dl class="signals">
+            <dt>edge</dt><dd id="sig-edge">—</dd>
+            <dt>velocity</dt><dd id="sig-vel">—</dd>
+            <dt>persistence</dt><dd id="sig-persist">—</dd>
+            <dt>fixation</dt><dd id="sig-fix">—</dd>
+            <dt>tracking</dt><dd id="sig-track">—</dd>
+          </dl>
+        </div>
+        <div>
+          <h3>Trajectory <span class="muted">raw (dim) vs filtered (bright)</span></h3>
+          <canvas id="trail" width="520" height="180"></canvas>
+          <h3>Events</h3>
+          <ul id="event-log" class="eventlog"><li class="muted">No events yet.</li></ul>
+        </div>
+        <div>
+          <h3>Parameters</h3>
+          <label>Min confidence <input type="number" id="prm-minconf" min="0" max="1" step="0.05" value="0.35" /></label>
+          <label>Saccade threshold px/s <input type="number" id="prm-velthresh" min="100" max="1500" step="25" value="450" /></label>
+          <label>Fixation dispersion px <input type="number" id="prm-fixthresh" min="10" max="120" step="5" value="40" /></label>
+          <label>Smoothing beta <input type="number" id="prm-beta" min="0" max="2" step="0.05" value="0.3" /></label>
+          <label>History window <input type="number" id="prm-history" min="100" max="5000" step="100" value="600" /></label>
+          <h3>Sessions</h3>
+          <div class="btn-row">
+            <button id="btn-record">Record</button>
+            <button id="btn-export-session" disabled>Export JSON</button>
+            <button id="btn-clear-session">Clear</button>
+          </div>
+          <div class="btn-row">
+            <label>Replay file <input type="file" id="file-replay" accept="application/json" /></label>
+          </div>
+          <div class="btn-row">
+            <button id="btn-replay-play" disabled>Play</button>
+            <button id="btn-replay-restart" disabled>Restart</button>
+            <label>Speed
+              <select id="sel-replay-speed">
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+              </select>
+            </label>
+          </div>
+          <div class="replaybar"><div id="replay-progress"></div></div>
+          <span class="muted small" id="session-info">0 rows recorded</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel privacy">
+      <h2>Privacy</h2>
+      <p class="small">Webcam access is required for gaze estimation. All video processing happens
+        <strong>on this device</strong> — no video frames are sent anywhere, recorded, or persisted.
+        Session exports contain only anonymized gaze-derived numbers (coordinates, confidence, intent),
+        never images, and only when you explicitly click export. Calibration metadata stays in this
+        browser's local storage. Stopping tracking releases the camera immediately.</p>
+    </section>
+
+    <!-- Floating tracking indicator. -->
+    <div id="tracking-pill" class="pill" hidden>👁 idle</div>
 
     <!-- Fullscreen consent gate: explicit opt-in before the camera starts. -->
     <div id="consent-gate" class="consent">

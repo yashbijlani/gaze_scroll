@@ -90,11 +90,68 @@ button:disabled { opacity: 0.4; cursor: default; }
   line-height: 1.5;
 }
 
+/* Scroll controls + lab + privacy sections */
+.scrollctl, .lab, .privacy {
+  margin: 0 24px 16px;
+}
+.scrollctl select, .controls select, .lab select {
+  background: #0f1319;
+  color: var(--text);
+  border: 1px solid #2b313c;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 14px;
+}
+button.danger {
+  background: var(--bad);
+  color: #1a0606;
+}
+.small { font-size: 13px; }
+.lab-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+.lab h3 { font-size: 14px; margin: 12px 0 6px; color: var(--muted); }
+.signals { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; font-size: 13px; }
+.signals dt { color: var(--muted); }
+.signals dd { margin: 0; font-variant-numeric: tabular-nums; }
+#trail { width: 100%; height: 180px; background: #0f1319; border-radius: 8px; }
+.eventlog { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 150px; overflow: auto; }
+.eventlog li { padding: 2px 0; border-bottom: 1px solid #2b313c; }
+.lab label { display: block; font-size: 13px; margin: 6px 0; }
+.lab input[type="number"] {
+  width: 90px; background: #0f1319; color: var(--text);
+  border: 1px solid #2b313c; border-radius: 6px; padding: 4px 6px;
+}
+.replaybar { height: 6px; background: #0f1319; border-radius: 3px; margin: 8px 0; }
+.replaybar > div { height: 100%; width: 0; background: var(--accent); border-radius: 3px; }
+
+/* Floating tracking pill */
+.pill {
+  position: fixed; left: 12px; bottom: 12px; z-index: 1600;
+  background: var(--panel); border: 1px solid #2b313c;
+  border-radius: 20px; padding: 6px 14px; font-size: 13px;
+}
+.pill[data-state="tracking"] { border-color: var(--good); }
+.pill[data-state="low"], .pill[data-state="lost"] { border-color: var(--bad); }
+.pill[data-state="paused"], .pill[data-state="calibrating"] { border-color: var(--warn); }
+
 /* Calibration layer */
 .cal-layer { position: fixed; inset: 0; z-index: 1500; background: rgba(8, 10, 14, 0.9); }
+.cal-card {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: var(--panel); border-radius: 12px; padding: 28px; max-width: 480px;
+}
+.cal-card ul { line-height: 1.6; color: #d5d9e2; }
 .cal-hint {
   position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
   font-size: 16px; color: var(--text);
+}
+.cal-skip {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: transparent; color: var(--muted);
+  border: 1px solid #2b313c;
 }
 .cal-target {
   position: fixed;
