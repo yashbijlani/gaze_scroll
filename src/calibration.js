@@ -18,6 +18,7 @@ export class CalibrationFlow {
     this.running = false;
     this.skipped = false;
     this.faceCheck = null; // () => bool; set by main.js (face seen recently)
+    this.lastDetail = null; // reason string from the last record attempt
     this.lastQuality = this.#load();
   }
 
@@ -95,10 +96,11 @@ export class CalibrationFlow {
       if (stored <= 0) {
         // Nothing reached the model (no usable eye data at click time):
         // repeat the SAME point with an explanation instead of advancing.
+        const why = this.lastDetail ? ` (reason: ${this.lastDetail})` : '';
         // eslint-disable-next-line no-await-in-loop
         this.#note(
-          'Point not recorded — no usable eye data at click time. ' +
-            'Keep looking at the dot and click again. If this repeats, ' +
+          'Point not recorded — no usable eye data at click time' +
+            `${why}. Keep looking at the dot and click again. If this repeats, ` +
             'check the preview is live with green eye boxes, then ' +
             'press “Restart camera” in Controls.',
         );
@@ -226,12 +228,23 @@ export class CalibrationFlow {
 
   async #recordPoint(x, y) {
     try {
-      if (this.recorder) return (await this.recorder(x, y)) ?? 0;
+      // Recorder may return a bare count or { stored, detail }.
+      if (this.recorder) {
+        const r = await this.recorder(x, y);
+        if (r != null && typeof r === 'object') {
+          this.lastDetail = r.detail ?? null;
+          return r.stored ?? 0;
+        }
+        this.lastDetail = null;
+        return r ?? 0;
+      }
       // Legacy path: repeated taps through the tracker (fire-and-forget).
       const taps = Math.max(1, this.cfg.samplesPerPoint ?? 5);
       for (let i = 0; i < taps; i++) this.tracker.record(x, y);
+      this.lastDetail = null;
       return taps;
     } catch {
+      this.lastDetail = 'exception (see console)';
       return 0;
     }
   }

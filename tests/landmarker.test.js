@@ -122,8 +122,7 @@ describe('LandmarkerGazeProvider', () => {
     assert.deepEqual(await p.predictOnce(), { x: 640, y: 400 });
   });
 
-  it('tick emits normalized samples; stop() halts', async () => {
-    const p = makeProvider(fakePositions());
+  it('tick emits normalized samples; stop() halts', async () => {    const p = makeProvider(fakePositions());
     reg.data.length = 0;
     await p.calibrateAt(100, 200);
     const got = [];
@@ -138,5 +137,65 @@ describe('LandmarkerGazeProvider', () => {
     assert.equal(s.confidence, 0.9);
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(got.length, n, 'silent after stop');
+  });
+});
+
+describe('LandmarkerGazeProvider failure reasons', () => {
+  function baseProvider(overrides = {}) {
+    const reg = stubReg();
+    global.window = global.window ?? { innerWidth: 1280, innerHeight: 800, webgazer: {} };
+    const tracker = {
+      calibratedCount: 0,
+      async begin() {},
+      end() {},
+      computeConfidence: () => 0.9,
+    };
+    return new LandmarkerGazeProvider({
+      tracker,
+      smoother: { filter: (x, y) => ({ x, y }), reset() {} },
+      faceDetector: { detect: async () => ({ positions: fakePositions() }) },
+      getVideo: () => stubVideo,
+      createGrabber: stubGrabber,
+      ...overrides,
+    });
+  }
+
+  it('names each failure stage', async () => {
+    // no-video
+    const noVideo = baseProvider({ getVideo: () => null });
+    assert.equal(await noVideo.predictOnce(), null);
+    assert.equal(noVideo.lastNullReason, 'no-video');
+
+    // no-face
+    const noFace = baseProvider({ faceDetector: { detect: async () => null } });
+    assert.equal(await noFace.predictOnce(), null);
+    assert.equal(noFace.lastNullReason, 'no-face');
+
+    // no-eyes (grabber fails)
+    const noEyes = baseProvider({ createGrabber: () => () => null });
+    assert.equal(await noEyes.predictOnce(), null);
+    assert.equal(noEyes.lastNullReason, 'no-eyes');
+
+    // no-model (regression API absent)
+    const prevWg = global.window.webgazer;
+    global.window.webgazer = {};
+    const noModel = baseProvider();
+    assert.equal(await noModel.predictOnce(), null);
+    assert.equal(noModel.lastNullReason, 'no-model');
+    assert.equal(await noModel.calibrateAt(10, 10), 0);
+    global.window.webgazer = prevWg;
+
+    // success clears the reason
+    const ok = baseProvider();
+    ok.lastNullReason = 'stale';
+    global.window.webgazer = { getRegression: () => [stubRegWithData()] };
+    function stubRegWithData() {
+      const r = stubReg();
+      r.data.push(true);
+      return r;
+    }
+    assert.ok(await ok.predictOnce());
+    assert.equal(ok.lastNullReason, null);
+    global.window.webgazer = prevWg;
   });
 });

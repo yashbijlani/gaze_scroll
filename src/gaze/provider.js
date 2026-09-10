@@ -62,6 +62,13 @@ export class WebGazerProvider extends GazeProvider {
   async start() {
     if (this.running) return;
     await this.tracker.begin();
+    // The landmarker estimator parks WebGazer's loop while it drives; undo
+    // that here so switching estimators back always restarts predictions.
+    try {
+      window.webgazer?.resume?.();
+    } catch {
+      /* optional */
+    }
     this.unsub = this.tracker.subscribe((raw) => this.#onRaw(raw));
     this.running = true;
   }

@@ -465,7 +465,18 @@ async function onEnable() {
   setConsentError(null);
   els.btnEnable.textContent = 'Starting…';
   const START_TIMEOUT_MS = 45000;
-  const active = getActiveProvider();
+  let active = getActiveProvider();
+  // Start-time escape hatch: the landmarker estimator is useless when its
+  // model failed to load — fall back to classic up front, loudly.
+  if (active === landmarkerProvider && faceDetector.failed) {
+    console.warn('[gaze] landmarker model failed, starting with webgazer classic', faceDetector.failed);
+    CONFIG.gaze.provider = 'webgazer';
+    if (els.selProvider) els.selProvider.value = 'webgazer';
+    setStatus(
+      `Face model failed to load (${faceDetector.failed}); started with WebGazer classic instead.`,
+    );
+    active = provider;
+  }
   try {
     await Promise.race([
       active.start(),
@@ -981,7 +992,22 @@ function init() {
   calibration.setFaceCheck(() => faceDetected());
   calibration.setRecorder(async (x, y) => {
     // Landmarker: verified write through our own eye patches.
-    if (getActiveProvider() === landmarkerProvider) return landmarkerProvider.calibrateAt(x, y);
+    if (getActiveProvider() === landmarkerProvider) {
+      const n = await landmarkerProvider.calibrateAt(x, y);
+      if (n > 0) return { stored: n, detail: null };
+      let detail = landmarkerProvider.lastNullReason ?? 'unknown';
+      // Escape-hatch hint: WebGazer's own detector sees eyes while ours
+      // can't record → the estimators disagree, suggest the other one.
+      try {
+        const wgPos = window.webgazer?.getTracker?.()?.getPositions?.();
+        if (wgPos && wgPos.length >= 100) {
+          detail += '; but WebGazer sees eyes — try Estimator → WebGazer classic + Restart camera';
+        }
+      } catch {
+        /* ignore */
+      }
+      return { stored: 0, detail };
+    }
     // Classic: legacy taps, then verify the store actually grew (it stays
     // flat when WebGazer's own detector is blind — the fake-complete trap).
     const before = webgazerStoredCount();
@@ -989,7 +1015,10 @@ function init() {
     for (let i = 0; i < taps; i++) tracker.record(x, y);
     const after = webgazerStoredCount();
     if (before == null || after == null) return taps; // unknowable → trust
-    return Math.max(0, after - before);
+    const grown = Math.max(0, after - before);
+    return grown > 0
+      ? { stored: grown, detail: null }
+      : { stored: 0, detail: 'webgazer stored 0 (its detector sees no eyes)' };
   });
   calibration.setPredictor(null); // default: WebGazer's own prediction
   calibration.setCounter(() => {

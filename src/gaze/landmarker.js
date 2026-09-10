@@ -99,6 +99,10 @@ export class LandmarkerGazeProvider extends GazeProvider {
     this.lastT = 0;
     this.lastFaceT = 0;
     this.frameCanvas = null;
+    // Last failure reason ('no-video' | 'no-face' | 'no-eyes' | 'no-model' |
+    // 'no-prediction' | null on success). Surfaced in the UI so a dead
+    // calibration point can say WHY instead of just repeating.
+    this.lastNullReason = null;
   }
 
   reg() {
@@ -142,13 +146,19 @@ export class LandmarkerGazeProvider extends GazeProvider {
   }
 
   // Single sense→predict pass shared by the loop, calibration, and probes.
-  // Returns { x, y } or null. Never throws.
+  // Returns { x, y } or null. Never throws. Records lastNullReason.
   async predictOnce() {
     try {
       const video = this.getVideo?.();
-      if (!video || video.videoWidth <= 0 || video.readyState < 2) return null;
+      if (!video || video.videoWidth <= 0 || video.readyState < 2) {
+        this.lastNullReason = 'no-video';
+        return null;
+      }
       const r = await this.faceDetector.detect(video, performance.now());
-      if (!r || !r.positions || r.positions.length < 100) return null;
+      if (!r || !r.positions || r.positions.length < 100) {
+        this.lastNullReason = 'no-face';
+        return null;
+      }
       // Face observed (even if the regression can't predict yet — e.g.
       // uncalibrated model). Without this, hasFace is never true and
       // face-present nulls are indistinguishable from a dead camera.
@@ -159,11 +169,23 @@ export class LandmarkerGazeProvider extends GazeProvider {
         video.videoHeight,
         this.createGrabber(video, this),
       );
-      if (!eyes) return null;
-      const pred = this.reg()?.predict?.(eyes);
-      if (!pred || !Number.isFinite(pred.x) || !Number.isFinite(pred.y)) return null;
+      if (!eyes) {
+        this.lastNullReason = 'no-eyes';
+        return null;
+      }
+      if (!this.reg() || typeof this.reg().predict !== 'function') {
+        this.lastNullReason = 'no-model';
+        return null;
+      }
+      const pred = this.reg().predict(eyes);
+      if (!pred || !Number.isFinite(pred.x) || !Number.isFinite(pred.y)) {
+        this.lastNullReason = 'no-prediction';
+        return null;
+      }
+      this.lastNullReason = null;
       return { x: pred.x, y: pred.y };
     } catch {
+      this.lastNullReason = 'no-prediction';
       return null;
     }
   }
@@ -173,26 +195,38 @@ export class LandmarkerGazeProvider extends GazeProvider {
     try {
       const reg = this.reg();
       if (!reg || typeof reg.addData !== 'function') {
+        this.lastNullReason = 'no-model';
         console.warn('[landmarker] regression addData() missing — cannot record');
         return 0;
       }
       const video = this.getVideo?.();
-      if (!video || video.videoWidth <= 0 || video.readyState < 2) return 0;
+      if (!video || video.videoWidth <= 0 || video.readyState < 2) {
+        this.lastNullReason = 'no-video';
+        return 0;
+      }
       const r = await this.faceDetector.detect(video, performance.now());
-      if (!r || !r.positions || r.positions.length < 100) return 0;
+      if (!r || !r.positions || r.positions.length < 100) {
+        this.lastNullReason = 'no-face';
+        return 0;
+      }
       const eyes = buildEyeObjects(
         r.positions,
         video.videoWidth,
         video.videoHeight,
         this.createGrabber(video, this),
       );
-      if (!eyes) return 0;
+      if (!eyes) {
+        this.lastNullReason = 'no-eyes';
+        return 0;
+      }
       for (let i = 0; i < this.taps; i++) reg.addData(eyes, [x, y]);
       if (this.tracker && Number.isFinite(this.tracker.calibratedCount)) {
         this.tracker.calibratedCount += this.taps;
       }
+      this.lastNullReason = null;
       return this.taps;
     } catch (err) {
+      this.lastNullReason = 'no-eyes';
       console.warn('[landmarker] calibrateAt failed', err);
       return 0;
     }
