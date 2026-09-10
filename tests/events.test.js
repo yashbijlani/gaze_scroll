@@ -62,4 +62,32 @@ describe('GazeEventDetector', () => {
     det.update({ timestamp: t + 600, x: 640, y: 400, confidence: 0.9, hasFace: true });
     assert.ok(seen.includes(GazeEvents.TRACKING_RECOVERED));
   });
+
+  it('face-present nulls are NOT tracking loss (face here, gaze unknown)', () => {
+    const det = new GazeEventDetector({ events: { trackingLostGapMs: 200 } }, VP);
+    const seen = [];
+    det.subscribe((e) => seen.push(e.type));
+    let t = 1000;
+    for (let i = 0; i < 30; i++) {
+      const r = det.update({
+        timestamp: t, x: null, y: null, confidence: 0, hasFace: true,
+      });
+      assert.equal(r.lost, false);
+      assert.equal(r.facePresent, true);
+      t += 100;
+    }
+    assert.ok(!seen.includes(GazeEvents.TRACKING_LOST), `saw: ${seen}`);
+  });
+
+  it('face returning after loss fires TRACKING_RECOVERED', () => {
+    const det = new GazeEventDetector({ events: { trackingLostGapMs: 200 } }, VP);
+    const seen = [];
+    det.subscribe((e) => seen.push(e.type));
+    det.update({ timestamp: 1000, x: null, y: null, confidence: 0, hasFace: false });
+    det.update({ timestamp: 1500, x: null, y: null, confidence: 0, hasFace: false });
+    assert.ok(seen.includes(GazeEvents.TRACKING_LOST));
+    const r = det.update({ timestamp: 1600, x: null, y: null, confidence: 0.2, hasFace: true });
+    assert.equal(r.lost, false);
+    assert.ok(seen.includes(GazeEvents.TRACKING_RECOVERED));
+  });
 });

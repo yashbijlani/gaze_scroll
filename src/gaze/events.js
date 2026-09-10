@@ -80,13 +80,32 @@ export class GazeEventDetector {
     return null;
   }
 
-  // Main entry: feed every normalized provider sample (null x/y = lost).
-  // Returns { fixation, velocity, edge } snapshot for the intent engine.
+  // Main entry: feed every normalized provider sample.
+  // Null x/y with hasFace = "face here, gaze unknown" (e.g. uncalibrated
+  // model or a blink) — explicitly NOT tracking loss. Only faceless nulls
+  // past the gap threshold declare TRACKING_LOST.
+  // Returns { fixation, velocity, edge, lost, facePresent }.
   update(sample) {
     const t = sample?.timestamp ?? performance.now();
     const gapMs = this.eventsCfg.trackingLostGapMs ?? 800;
 
     if (sample?.x == null || sample?.y == null) {
+      if (sample?.hasFace) {
+        if (this.lost) {
+          this.lost = false;
+          this.#fire(GazeEvents.TRACKING_RECOVERED, { t });
+        }
+        this.lastSampleT = t; // stream is alive; don't trip the gap timer
+        this.vel.add(null, null, t); // decay velocity, re-anchor on resume
+        this.#endEdge(t, 'unknown');
+        return {
+          fixation: { state: 'unknown' },
+          velocity: this.vel.snapshot(),
+          edge: null,
+          lost: false,
+          facePresent: true,
+        };
+      }
       if (this.lastSampleT != null && t - this.lastSampleT > gapMs && !this.lost) {
         this.lost = true;
         this.#fire(GazeEvents.TRACKING_LOST, { t });
@@ -96,7 +115,13 @@ export class GazeEventDetector {
         this.#fire(GazeEvents.TRACKING_LOST, { t });
       }
       this.#endEdge(t, 'lost');
-      return { fixation: { state: 'lost' }, velocity: this.vel.snapshot(), edge: null, lost: true };
+      return {
+        fixation: { state: 'lost' },
+        velocity: this.vel.snapshot(),
+        edge: null,
+        lost: true,
+        facePresent: false,
+      };
     }
 
     if (this.lost) {
@@ -138,7 +163,7 @@ export class GazeEventDetector {
       ? { side, dwellMs: t - (this.edgeSince ?? t), dwelling: this.edgeDwelling === side }
       : null;
 
-    return { fixation, velocity, edge, lost: false };
+    return { fixation, velocity, edge, lost: false, facePresent: !!sample?.hasFace };
   }
 
   #endEdge(t, reason) {

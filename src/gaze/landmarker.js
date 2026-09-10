@@ -149,6 +149,9 @@ export class LandmarkerGazeProvider extends GazeProvider {
       if (!video || video.videoWidth <= 0 || video.readyState < 2) return null;
       const r = await this.faceDetector.detect(video, performance.now());
       if (!r || !r.positions || r.positions.length < 100) return null;
+      // Face observed (even if the regression can't predict yet — e.g.
+      // uncalibrated model). Without this, hasFace is never true and
+      // face-present nulls are indistinguishable from a dead camera.
       this.lastFaceT = performance.now();
       const eyes = buildEyeObjects(
         r.positions,

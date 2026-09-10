@@ -141,6 +141,8 @@ let latestSnapshot = null;
 let lastDomFullT = 0;
 let lastDomFull = { textBelow: 0.5 };
 let lastScrollVel = 0;
+let lastValidGaze = null; // last predicted position (holdover cursor source)
+const HOLDOVER_MS = 1200; // estimated cursor survives gaps this long
 
 function setStatus(msg) {
   els.status.textContent = msg;
@@ -185,6 +187,27 @@ function handleSample(sample) {
     logPipeline(sample, analysis, lostIntent, null, null);
     return;
   }
+
+  // Face here, gaze unknown (blink, uncalibrated model): keep an estimated
+  // cursor alive briefly (holdover) so momentary gaps don't blink the UI,
+  // then hide. Intent stays UNCERTAIN — holdover never drives scrolling.
+  if (!sample || sample.x == null || sample.y == null) {
+    const intent = intentEngine.update(sample, analysis, scrollContext());
+    scrollController.updateIntent(intent, analysis.edge, t);
+    logPipeline(sample, analysis, intent, null, null);
+    if (
+      showCursor &&
+      lastValidGaze &&
+      t - lastValidGaze.t < HOLDOVER_MS &&
+      Number.isFinite(lastValidGaze.x)
+    ) {
+      overlay.drawGaze(lastValidGaze.x, lastValidGaze.y, 0.15, { state: 'unknown' });
+    } else {
+      overlay.hideGaze();
+    }
+    return;
+  }
+  lastValidGaze = { x: sample.x, y: sample.y, t, confidence: sample.confidence ?? 0 };
 
   const intent = intentEngine.update(sample, analysis, scrollContext());
   // DOM signals: cheap per-sample target + throttled text-below scan
@@ -238,6 +261,10 @@ function scrollContext() {
 function trackingLabel(sample) {
   if (!trackingRunning && !replaying) return 'idle';
   if (eventDetector.lost) return 'lost';
+  // Face visible but the model has never produced a position: the honest
+  // state is "needs calibration", not any flavor of lost/broken.
+  if (faceDetected() && lastGazeT === 0) return 'face detected · calibrate for gaze';
+  if (faceDetected() && sample?.x == null) return 'face detected · gaze unknown';
   if ((sample?.confidence ?? 0) < (CONFIG.intent.minConfidence ?? 0.35)) return 'low confidence';
   if (!autoScroll) return 'tracking (scroll off)';
   if (scrollController.overridden()) return 'paused (manual override)';
@@ -600,6 +627,7 @@ async function onRestartCamera() {
   }
   trackingRunning = false;
   lastGazeT = 0;
+  lastValidGaze = null;
   latestSnapshot = null;
   eventDetector.reset();
   intentEngine.reset();
@@ -699,6 +727,7 @@ function updatePill() {
   const conf = s?.confidence ?? 0;
   if (eventDetector.lost) return lab.setPill('lost', 'tracking lost');
   if (!faceDetected()) return lab.setPill('low', 'no face detected');
+  if (lastGazeT === 0) return lab.setPill('paused', 'face ok · calibrate for gaze');
   if (conf < (CONFIG.intent.minConfidence ?? 0.35)) return lab.setPill('low', 'low confidence');
   if (!autoScroll) return lab.setPill('paused', 'tracking · scroll off');
   if (scrollController.overridden()) return lab.setPill('paused', 'paused · you scrolled');

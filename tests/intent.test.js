@@ -123,4 +123,14 @@ describe('IntentEngine', () => {
     }
     assert.notEqual(last.intent, Intents.LOOKING_DOWN);
   });
+
+  it('face present but no position → UNCERTAIN, never TRACKING_LOST', () => {
+    const eng = new IntentEngine(BASE_CFG, VP);
+    const r = eng.update(
+      { timestamp: 1000, x: null, y: null, confidence: 0, hasFace: true },
+      { fixation: { state: 'unknown' }, velocity: { speed: 0 }, edge: null, lost: false },
+      { scrollY: 500, maxScrollY: 5000 },
+    );
+    assert.equal(r.intent, Intents.UNCERTAIN);
+  });
 });

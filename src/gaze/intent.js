@@ -84,6 +84,11 @@ export class IntentEngine {
     const th = this.thresholds();
 
     if (!sample || sample.x == null || sample.y == null || analysis?.lost) {
+      // Face present but no position (blink, uncalibrated model): the
+      // honest answer is UNCERTAIN — hold scroll state, never claim loss.
+      if (analysis && !analysis.lost && sample?.hasFace) {
+        return this.#transition(Intents.UNCERTAIN, null, 0.3, t, this.last.signals);
+      }
       return this.#transition(Intents.TRACKING_LOST, null, 1, t, this.last.signals);
     }
     const confidence = sample.confidence ?? 0;
