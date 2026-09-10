@@ -1,4 +1,46 @@
 // Standalone face-landmark detector (MediaPipe Tasks FaceLandmarker).
+// (Rationale block lives on StandaloneFaceDetector below.)
+//
+// Single-flight + micro-cache for detect(): the overlay poll (~10Hz),
+// the gaze loop (~15Hz), and calibration clicks all share one landmarker,
+// and overlapping detectForVideo calls on it collide (thrown errors that
+// surface as flickering nulls). Concurrent callers await the same
+// in-flight inference; results are reused for ttlMs. Pure helper, tested.
+export class AsyncCoalescer {
+  constructor(ttlMs = 40) {
+    this.ttlMs = ttlMs;
+    this.inflight = null;
+    this.cached = null;
+    this.cachedAt = 0;
+  }
+
+  async run(fn) {
+    const now = performance.now();
+    if (this.cached && now - this.cachedAt < this.ttlMs) return this.cached;
+    if (this.inflight) {
+      try {
+        return await this.inflight;
+      } catch {
+        return null;
+      }
+    }
+    this.inflight = (async () => fn())();
+    try {
+      const r = await this.inflight;
+      this.cached = r;
+      this.cachedAt = performance.now();
+      return r;
+    } catch {
+      return null;
+    } finally {
+      this.inflight = null;
+    }
+  }
+
+  invalidate() {
+    this.cached = null;
+  }
+}
 //
 // Why a second detector? WebGazer 2.0.1 bundles a 2021 facemesh stack whose
 // model fetches silently hang or 404 on modern hosting, leaving zero face
@@ -45,6 +87,7 @@ export class StandaloneFaceDetector {
     this.loading = null;
     this.failed = null;
     this.delegate = cfg.delegate ?? 'GPU';
+    this.coalescer = new AsyncCoalescer(cfg.coalesceMs ?? 40);
   }
 
   get enabled() {
@@ -103,11 +146,15 @@ export class StandaloneFaceDetector {
   }
 
   // Returns { positions, faceBox, count } or null (no face / not ready /
-  // failed). Never throws. Caller throttles (see CONFIG.face interval).
+  // failed). Never throws. Concurrent calls share one inference.
   async detect(video, timestampMs) {
+    if (!this.enabled || this.failed) return null;
+    if (!video || video.videoWidth <= 0 || video.readyState < 2) return null;
+    return this.coalescer.run(() => this.#detectInner(video, timestampMs));
+  }
+
+  async #detectInner(video, timestampMs) {
     try {
-      if (!this.enabled || this.failed) return null;
-      if (!video || video.videoWidth <= 0 || video.readyState < 2) return null;
       const landmarker = await this.ensure();
       const result = landmarker.detectForVideo(video, Math.max(0, Math.round(timestampMs)));
       const landmarks = result?.faceLandmarks?.[0];

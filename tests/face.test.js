@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizedToPixels, faceBoxOf, StandaloneFaceDetector } from '../src/gaze/face.js';
+import { normalizedToPixels, faceBoxOf, StandaloneFaceDetector, AsyncCoalescer } from '../src/gaze/face.js';
 
 describe('normalizedToPixels', () => {
   it('scales normalized landmarks to video pixels', () => {
@@ -32,8 +32,7 @@ describe('faceBoxOf', () => {
   });
 });
 
-describe('StandaloneFaceDetector', () => {
-  it('starts idle and detect() degrades to null without a video', async () => {
+describe('StandaloneFaceDetector', () => {  it('starts idle and detect() degrades to null without a video', async () => {
     const d = new StandaloneFaceDetector({ enabled: true });
     assert.equal(d.state, 'idle');
     assert.equal(await d.detect(null, 0), null);
@@ -43,5 +42,37 @@ describe('StandaloneFaceDetector', () => {
     const d = new StandaloneFaceDetector({ enabled: false });
     assert.equal(d.state, 'disabled');
     assert.equal(await d.detect({ videoWidth: 640, readyState: 4 }, 1000), null);
+  });
+});
+
+describe('AsyncCoalescer', () => {
+  it('concurrent callers share one inference', async () => {
+    const c = new AsyncCoalescer(1000);
+    let calls = 0;
+    const fn = async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 20));
+      return { n: calls };
+    };
+    const [a, b, c2] = await Promise.all([c.run(fn), c.run(fn), c.run(fn)]);
+    assert.equal(calls, 1);
+    assert.deepEqual([a, b, c2], [{ n: 1 }, { n: 1 }, { n: 1 }]);
+  });
+
+  it('reuses the result within TTL, re-runs after', async () => {
+    const c = new AsyncCoalescer(30);
+    let calls = 0;
+    const fn = async () => ++calls;
+    assert.equal(await c.run(fn), 1);
+    assert.equal(await c.run(fn), 1);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(await c.run(fn), 2);
+  });
+
+  it('rejection degrades to null without poisoning later calls', async () => {
+    const c = new AsyncCoalescer(1000);
+    assert.equal(await c.run(async () => { throw new Error('boom'); }), null);
+    c.invalidate();
+    assert.equal(await c.run(async () => 42), 42);
   });
 });
