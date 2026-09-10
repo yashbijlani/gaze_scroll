@@ -4,13 +4,32 @@ How the pipeline turns noisy webcam gaze into scroll motion, and why each
 threshold exists. All tunable numbers live in `src/config.js`.
 
 ## 0. What webcam gaze is (and isn't)
-
 WebGazer reports ~100–130px error in ideal conditions (Papoutsaki et al.
 2016, IJCAI; see ARCHITECTURE.md §1). There is no true head-pose model, no
 model confidence, and ~15–30Hz async samples. Every stage below assumes the
 input is a *region hint*, never a precise point. The design rule: **no
 single sample ever causes motion** — every action needs sustained,
 multi-signal evidence.
+
+## 0.5 Face detection — dual stack (`gaze/face.js`, `overlay.js`)
+
+WebGazer 2.0.1's bundled facemesh stack (2021 tfjs-models + MediaPipe
+solution files) fails silently on modern hosting: hung fetches, 404s, and
+async rejections that kill its loop without logging. Since every downstream
+stage (calibration taps, predictions, confidence) needs face data, a blind
+bundled detector used to wedge the whole app with no visible cause.
+
+So face *presence* no longer depends on it. A standalone MediaPipe Tasks
+FaceLandmarker (pinned `tasks-vision@0.10.35`, GPU with CPU fallback) runs
+on the visible preview video at ~7Hz, entirely for detection + overlay:
+amber face bounding box, green eye boxes from the FaceMesh eye index sets
+(first 468 landmarks share FaceMesh topology), faint landmark dots. Either
+source (bundled or standalone) feeds presence for the pill, Lab face row,
+and the calibration face gate. The detector loads lazily, never throws
+into the app loop, and reports `idle → loading → ready | failed: reason`
+in diagnostics. WebGazer still owns gaze regression for now; if its
+predictions stay null while landmarks flow, the estimator itself is the
+next replacement target (see provider abstraction).
 
 ## 1. Smoothing — One Euro filter (`smoothing.js`)
 

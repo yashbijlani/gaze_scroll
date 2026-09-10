@@ -217,6 +217,24 @@ export class Overlay {
         const box = bboxOf(EyeIndices[side], positions, vw, vh, canvas.width, canvas.height, mirrored);
         if (box) ctx.strokeRect(box.x, box.y, box.w, box.h);
       }
+      // Face bounding box, amber, with a label.
+      const face = bboxOf(
+        positions.map((_, i) => i),
+        positions,
+        vw,
+        vh,
+        canvas.width,
+        canvas.height,
+        mirrored,
+      );
+      if (face) {
+        ctx.strokeStyle = '#ffb020';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(face.x, face.y, face.w, face.h);
+        ctx.fillStyle = '#ffb020';
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.fillText('face', face.x + 4, Math.max(12, face.y - 4));
+      }
       return positions.length;
     } catch (err) {
       console.warn('face overlay skipped', err);

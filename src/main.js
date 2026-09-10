@@ -21,6 +21,7 @@ import { ScrollController, ScrollModes } from './gaze/scroll.js';
 import { ReadingTracker } from './gaze/reading.js';
 import { gazeTarget, textBelowRatio } from './gaze/dom.js';
 import { SessionRecorder, ReplayDriver } from './gaze/session.js';
+import { StandaloneFaceDetector } from './gaze/face.js';
 import { LabController } from './lab.js';
 
 const $ = (id) => document.getElementById(id);
@@ -87,6 +88,7 @@ const intentEngine = new IntentEngine(
 const readingTracker = new ReadingTracker();
 const scrollController = new ScrollController(CONFIG.scroll, null);
 const recorder = new SessionRecorder();
+const faceDetector = new StandaloneFaceDetector(CONFIG.face);
 const lab = new LabController();
 let replay = null;
 let replaying = false;
@@ -104,8 +106,11 @@ let trackingStartedAt = 0;
 let stallWarned = false;
 let enableInFlight = false;
 let wasVideoLive = false;
-let lastFaceT = 0; // last time a sample carried face/eye features
+let lastFaceT = 0; // last time a face was observed (either detector)
 let lastLandmarks = 0; // last time face landmarks were observed
+let lastFaceSource = null; // 'webgazer' | 'landmarker' | null
+let lastStandaloneDetect = 0;
+let faceDetectBusy = false;
 // Latest pipeline snapshot for the lab (written per sample, read at 10Hz).
 let latestSnapshot = null;
 let lastDomFullT = 0;
@@ -229,12 +234,15 @@ function faceDetected(t = performance.now()) {
 
 function faceLabel(t) {
   if (!trackingRunning && !replaying) return '—';
-  return faceDetected(t) ? 'detected' : 'searching…';
+  if (!faceDetected(t)) return 'searching…';
+  return lastFaceSource ? `detected (${lastFaceSource})` : 'detected';
 }
 
-// Poll WebGazer's landmark buffer and paint our own eye overlay over the
-// preview video. Returns landmark count (0 = detector sees no face).
-function updateFaceOverlay() {
+// Face overlay from two independent sources: WebGazer's bundled landmarks
+// when they exist, otherwise our standalone FaceLandmarker (throttled).
+// Either source feeds presence (lastFaceT) for the pill, lab, and the
+// calibration face gate. Never throws; async overlap guarded.
+async function updateFaceOverlay() {
   const canvas = $('face-overlay');
   if (!canvas) return 0;
   try {
@@ -244,15 +252,47 @@ function updateFaceOverlay() {
       overlay.hideFaceOverlay(canvas);
       return 0;
     }
-    const positions = window.webgazer?.getTracker?.()?.getPositions?.();
+    let positions = null;
+    try {
+      const wgPositions = window.webgazer?.getTracker?.()?.getPositions?.();
+      if (wgPositions && wgPositions.length >= 100) {
+        positions = wgPositions;
+        lastFaceSource = 'webgazer';
+      }
+    } catch {
+      /* fall through to standalone */
+    }
+    const now = performance.now();
+    if (
+      !positions &&
+      faceDetector.enabled &&
+      !faceDetectBusy &&
+      now - lastStandaloneDetect >= (CONFIG.face.detectIntervalMs ?? 150)
+    ) {
+      faceDetectBusy = true;
+      try {
+        const r = await faceDetector.detect(video, now);
+        if (r && r.positions.length >= 100) {
+          positions = r.positions;
+          lastFaceSource = 'landmarker';
+        }
+      } finally {
+        faceDetectBusy = false;
+        lastStandaloneDetect = performance.now();
+      }
+    }
     if (!positions || positions.length < 100) {
       overlay.hideFaceOverlay(canvas);
       return 0;
     }
     canvas.hidden = false;
     const n = overlay.renderFaceOverlay(canvas, video, positions);
-    if (n > 0) lastLandmarks = performance.now();
-    else overlay.hideFaceOverlay(canvas);
+    if (n > 0) {
+      lastLandmarks = performance.now();
+      lastFaceT = lastLandmarks;
+    } else {
+      overlay.hideFaceOverlay(canvas);
+    }
     return n;
   } catch {
     return 0;
@@ -515,6 +555,7 @@ async function onRestartCamera() {
   lab.clearTrail();
   overlay.hideGaze();
   overlay.releaseFallbackPreview();
+  faceDetector.resetFailure();
   await onEnable();
 }
 
@@ -799,6 +840,7 @@ function buildDiagnostics() {
     },
     webgazer,
     previewFallback: !!overlay.fallbackStream,
+    face: { state: faceDetector.state, source: lastFaceSource },
     errors: errorLog.slice(-12),
     calibration: calibration.lastQuality,
     scroll: { mode: scrollController.mode, autoScroll, velocity: lastScrollVel },

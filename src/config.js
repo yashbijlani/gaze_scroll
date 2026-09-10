@@ -20,6 +20,18 @@ export const CONFIG = {
     faceMeshSolutionPath:
       'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619',
   },
+  face: {
+    // Standalone MediaPipe Tasks FaceLandmarker: independent of WebGazer's
+    // bundled 2021 facemesh stack. Drives the eye overlay + face presence.
+    // Pinned: tasks-vision 0.10.35 ships vision_bundle.mjs + wasm/.
+    enabled: true,
+    detectIntervalMs: 150,
+    delegate: 'GPU', // auto-retries CPU on failure
+    bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs',
+    wasmBase: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
+    modelUrl:
+      'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+  },
   smoothing: {
     // One Euro filter params: minCutoff (jitter at rest), beta (lag vs speed).
     minCutoff: 1.0,
@@ -68,8 +80,7 @@ export const CONFIG = {
     minActivationMs: 700, // evidence must persist this long before acting
     minConfidence: 0.35, // below this → UNCERTAIN/TRACKING_LOST, never scroll
   },
-  scroll: {
-    mode: 'smooth', // 'discrete' | 'smooth' | 'edge' | 'reading' | 'predictive' | 'off'
+  scroll: {    mode: 'smooth', // 'discrete' | 'smooth' | 'edge' | 'reading' | 'predictive' | 'off'
     maxVelocityPxPerS: 900,
     minActivationMs: 700,
     discreteChunkPx: 320, // ~one reading chunk per discrete step
