@@ -131,7 +131,8 @@ let stallWarned = false;
 let enableInFlight = false;
 let wasVideoLive = false;
 let sampleUnsub = null; // handleSample subscription (cleared on restart/switch)
-let eventUnsub = null; // lab event-log subscription (same)let lastFaceT = 0; // last time a face was observed (either detector)
+let eventUnsub = null; // lab event-log subscription (same)
+let lastFaceT = 0; // last time a face was observed (either detector)
 let lastLandmarks = 0; // last time face landmarks were observed
 let lastFaceSource = null; // 'webgazer' | 'landmarker' | null
 let lastStandaloneDetect = 0;
@@ -1103,3 +1104,7 @@ function init() {
 }
 
 init();
+
+// Test seam: lets the smoke test execute the real module init + pipeline
+// without a browser. Emitted samples drive the full handler path.
+export const __testHooks = { handleSample };
