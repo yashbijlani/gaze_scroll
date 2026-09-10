@@ -569,9 +569,12 @@ async function onEnable() {
       setStatus('Tracking started, but the camera track is not live yet — waiting for first frames…');
     } else {
       const [vw, vh] = v.videoSize;
-      setStatus(
-        `Tracking running (${vw || '?'}×${vh || '?'} video). Click “Calibrate” for better accuracy.`,
-      );
+      const restored = landmarkerProvider.restoredInfo;
+      const restNote =
+        active === landmarkerProvider && restored
+          ? ` Restored ${restored.restored} calibration samples from your last visit — no need to recalibrate.`
+          : ' Click “Calibrate” for better accuracy.';
+      setStatus(`Tracking running (${vw || '?'}×${vh || '?'} video).${restNote}`);
     }
     tracker.probePrediction().then((probe) => {
       console.info('[gaze] prediction probe', probe);
@@ -595,16 +598,24 @@ async function onCalibrate() {
   calibration.setPredictor(
     getActiveProvider() === landmarkerProvider ? () => landmarkerProvider.predictOnce() : null,
   );
+  // Fresh mapping: a new run replaces the old one (appending across head
+  // shifts poisons the model). Persisted copy is rewritten at the end.
+  if (getActiveProvider() === landmarkerProvider) landmarkerProvider.reset();
   setStatus('Calibration running: look at each dot and click it.');
   const done = await calibration.start((d, n) => {
     els.calStatus.textContent = `Calibrated ${d}/${n}…`;
   });
   const q = calibration.lastQuality;
+  let persistNote = '';
+  if (getActiveProvider() === landmarkerProvider && (q?.stored ?? 0) > 0) {
+    persistNote = landmarkerProvider.save() ? ' Saved for next visit.' : '';
+  }
   els.calStatus.textContent =
     `Calibration ${q?.label ?? 'done'}: ${done} points recorded ` +
     `(${tracker.calibratedCount} total this session)` +
     (q?.meanErrPx != null ? `, mean error ~${q.meanErrPx}px` : '') +
-    (q?.stored != null ? `, ${q.stored} eye samples in model.` : '.');
+    (q?.stored != null ? `, ${q.stored} eye samples in model.` : '.') +
+    persistNote;
   setStatus('Calibration complete. Everyday clicks keep training the model implicitly.');
   els.btnCalibrate.disabled = false;
   lab.setPill('tracking', 'tracking');
@@ -668,7 +679,11 @@ function bindScrollControls() {
     els.chkAutoscroll.addEventListener('change', (e) => {
       autoScroll = e.target.checked;
       scrollController.setEnabled(autoScroll);
-      setStatus(autoScroll ? 'Automatic scrolling enabled.' : 'Automatic scrolling off.');
+      setStatus(
+        autoScroll
+          ? `Automatic scrolling on (${scrollController.mode}). Hold your gaze at the bottom edge ~1s to scroll down, top edge to go up.`
+          : 'Automatic scrolling off.',
+      );
       updatePill();
     });
   }

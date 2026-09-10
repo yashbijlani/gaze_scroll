@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { eyeFeatures, solveRidge, RidgeGazeMapper } from '../src/gaze/ridge.js';
+import { eyeFeatures, solveRidge, RidgeGazeMapper, medianFeatures, l1dist } from '../src/gaze/ridge.js';
 
 function solidPatch(v, w = 40, h = 30) {
   const data = new Uint8ClampedArray(w * h * 4);
@@ -83,5 +83,33 @@ describe('RidgeGazeMapper', () => {
     m.clear();
     assert.equal(m.count, 0);
     assert.equal(m.predict(solidPatch(0.2), solidPatch(0.2)), null);
+  });
+});
+
+describe('persistence + robust stats', () => {
+  it('toJSON/fromJSON round-trips the mapping', () => {
+    const m = new RidgeGazeMapper();
+    m.addSample(solidPatch(0.2), solidPatch(0.7), 100, 200);
+    m.addSample(solidPatch(0.6), solidPatch(0.3), 500, 600);
+    const m2 = RidgeGazeMapper.fromJSON(JSON.parse(JSON.stringify(m.toJSON())));
+    assert.equal(m2.count, 2);
+    const a = m.predict(solidPatch(0.2), solidPatch(0.7));
+    const b = m2.predict(solidPatch(0.2), solidPatch(0.7));
+    assert.ok(Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1, 'restored model agrees');
+  });
+
+  it('fromJSON rejects garbage', () => {
+    assert.throws(() => RidgeGazeMapper.fromJSON(null));
+    assert.throws(() => RidgeGazeMapper.fromJSON({ version: 99, samples: [] }));
+    const m = RidgeGazeMapper.fromJSON({ version: 1, samples: [{ f: [1], x: 0, y: 0 }] });
+    assert.equal(m.count, 0, 'wrong-dim rows skipped');
+  });
+
+  it('median + l1 identify the outlier', () => {
+    const good = [[1, 1], [1.1, 0.9], [0.9, 1.1]];
+    const bad = [10, 10];
+    const med = medianFeatures([...good, bad]);
+    assert.ok(Math.abs(med[0] - 1) < 0.2 && Math.abs(med[1] - 1) < 0.2);
+    assert.ok(l1dist(bad, med) > l1dist(good[0], med) * 5);
   });
 });

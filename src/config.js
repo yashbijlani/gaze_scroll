@@ -79,7 +79,7 @@ export const CONFIG = {
     minActivationMs: 700, // evidence must persist this long before acting
     minConfidence: 0.35, // below this → UNCERTAIN/TRACKING_LOST, never scroll
   },
-  scroll: {    mode: 'smooth', // 'discrete' | 'smooth' | 'edge' | 'reading' | 'predictive' | 'off'
+  scroll: {    mode: 'edge', // 'discrete' | 'smooth' | 'edge' | 'reading' | 'predictive' | 'off'
     maxVelocityPxPerS: 900,
     minActivationMs: 700,
     discreteChunkPx: 320, // ~one reading chunk per discrete step

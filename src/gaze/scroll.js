@@ -109,15 +109,34 @@ export class ScrollController {
     if (!r) return 0;
     if (r.intent === Intents.TRACKING_LOST || r.intent === Intents.UNCERTAIN) return 0;
     const minAct = this.cfg.minActivationMs ?? 700;
-    if (this.intentHeldMs(now) < minAct) return 0; // never 1-sample reactions
     const maxVel = this.cfg.maxVelocityPxPerS ?? 900;
-    const dir = r.intent === Intents.LOOKING_DOWN ? 1 : r.intent === Intents.LOOKING_UP ? -1 : 0;
-    if (dir === 0) return 0;
+    // Intent direction for the intent-driven modes; EDGE derives its own
+    // from the dwell below (a zero here returns 0 naturally in each branch).
+    const intentDir =
+      r.intent === Intents.LOOKING_DOWN ? 1 : r.intent === Intents.LOOKING_UP ? -1 : 0;
 
     if (this.mode === ScrollModes.DISCRETE) return 0; // discrete scrolls in tick()
+    // Never react to a single sample; EDGE uses dwell time instead (below).
+    if (this.mode !== ScrollModes.EDGE && this.intentHeldMs(now) < minAct) return 0;
     if (this.mode === ScrollModes.EDGE) {
-      const depth = this.#edgeDepth();
-      if (depth <= 0) return 0;
+      // Edge mode takes direction from the sustained edge dwell itself —
+      // not from the intent engine — so noisy gaze that never reaches a
+      // directional intent can still scroll after dwelling ~1s at an edge.
+      // The dwell timer IS the activation gate (no single-sample motion).
+      const e = this.latestEdge;
+      let dir = 0;
+      let depth = 0;
+      let heldMs = this.intentHeldMs(now);
+      if (e && e.dwelling) {
+        dir = e.side === 'bottom' ? 1 : e.side === 'top' ? -1 : 0;
+        depth = Math.min(1, (e.dwellMs ?? 0) / 1000);
+        heldMs = Math.max(heldMs, e.dwellMs ?? 0);
+      } else {
+        dir = r.intent === Intents.LOOKING_DOWN ? 1 : r.intent === Intents.LOOKING_UP ? -1 : 0;
+        depth = 0.5;
+      }
+      if (dir === 0 || depth <= 0) return 0;
+      if (heldMs < minAct) return 0;
       const gain = this.cfg.edgeProportionalGain ?? 2.2;
       const v = Math.min(maxVel, depth * maxVel * gain);
       return dir * v * Math.max(0.25, r.confidence ?? 1);
@@ -129,7 +148,7 @@ export class ScrollController {
       const rd = this.reading;
       if (!rd || !rd.onText) return 0;
       if (!rd.progressing && !rd.nearEnd) return 0;
-      return dir * maxVel * 0.6 * Math.max(0.3, r.confidence ?? 1);
+      return intentDir * maxVel * 0.6 * Math.max(0.3, r.confidence ?? 1);
     }
     if (this.mode === ScrollModes.PREDICTIVE) {
       // Pre-reveal: start gently once readable content below runs thin,
@@ -137,10 +156,10 @@ export class ScrollController {
       const rd = this.reading;
       if (!rd || !rd.onText) return 0;
       if (!rd.revealSoon && !rd.nearEnd) return 0;
-      return dir * maxVel * 0.45 * Math.max(0.3, r.confidence ?? 1);
+      return intentDir * maxVel * 0.45 * Math.max(0.3, r.confidence ?? 1);
     }
     // smooth: intent-driven ramped core.
-    return dir * maxVel * Math.max(0.25, r.confidence ?? 1);
+    return intentDir * maxVel * Math.max(0.25, r.confidence ?? 1);
   }
 
   // Advance the controller by dt seconds. Call from requestAnimationFrame.
@@ -188,13 +207,6 @@ export class ScrollController {
     this.lastDiscreteAt = now;
     this.io.scrollBy(0, delta);
     return delta;
-  }
-
-  #edgeDepth() {
-    const e = this.latestEdge;
-    if (!e || !e.dwelling) return 0;
-    // dwellMs ramps 0→1 over ~1s of sustained dwell for a gentle onset.
-    return Math.min(1, (e.dwellMs ?? 0) / 1000);
   }
 
   #bindManualOverride() {

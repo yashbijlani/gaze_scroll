@@ -113,4 +113,33 @@ describe('ScrollController', () => {
     assert.equal(sc.velocity, 0);
     assert.equal(sc.targetVelocity(io.now()), 0);
   });
+
+  it('EDGE mode follows sustained edge dwell without directional intent', () => {
+    const io = fakeIO();
+    const sc = new ScrollController({ minActivationMs: 700, maxVelocityPxPerS: 900 }, io);
+    sc.setMode(ScrollModes.EDGE);
+    // Non-directional intent (READING) + dwelling bottom edge for 1.2s.
+    sc.updateIntent({ intent: Intents.READING, confidence: 0.8, signals: {} }, null, io.now());
+    io.t += 100;
+    sc.updateIntent(
+      { intent: Intents.READING, confidence: 0.8, signals: {} },
+      { side: 'bottom', dwellMs: 1200, dwelling: true },
+      io.now(),
+    );
+    assert.ok(sc.targetVelocity(io.now()) > 0, 'dwelling bottom scrolls down');
+    // Top edge reverses.
+    sc.updateIntent(
+      { intent: Intents.READING, confidence: 0.8, signals: {} },
+      { side: 'top', dwellMs: 1200, dwelling: true },
+      io.now(),
+    );
+    assert.ok(sc.targetVelocity(io.now()) < 0, 'dwelling top scrolls up');
+    // Present but not yet dwelling → hold still.
+    sc.updateIntent(
+      { intent: Intents.READING, confidence: 0.8, signals: {} },
+      { side: 'bottom', dwellMs: 100, dwelling: false },
+      io.now(),
+    );
+    assert.equal(sc.targetVelocity(io.now()), 0);
+  });
 });

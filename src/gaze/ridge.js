@@ -151,4 +151,53 @@ export class RidgeGazeMapper {
     this.wy = null;
     this.dirty = false;
   }
+
+  // Persist/restore the learned mapping (features + targets, not images).
+  // Floats rounded to 4dp: a 45-tap session is ~140KB, inside localStorage.
+  toJSON() {
+    return {
+      version: 1,
+      eyeW: this.eyeW,
+      eyeH: this.eyeH,
+      lambda: this.lambda,
+      samples: this.samples.map((s) => ({
+        f: s.feats.map((v) => Math.round(v * 1e4) / 1e4),
+        x: Math.round(s.x * 10) / 10,
+        y: Math.round(s.y * 10) / 10,
+      })),
+    };
+  }
+
+  static fromJSON(json) {
+    if (!json || json.version !== 1 || !Array.isArray(json.samples)) {
+      throw new Error('not a ridge-mapper v1 payload');
+    }
+    const m = new RidgeGazeMapper({ eyeW: json.eyeW ?? 16, eyeH: json.eyeH ?? 12, lambda: json.lambda ?? 1 });
+    const dim = m.eyeW * m.eyeH * 2 + 1;
+    for (const s of json.samples) {
+      if (!Array.isArray(s.f) || s.f.length !== dim) continue;
+      if (!Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
+      m.samples.push({ feats: s.f.slice(), x: s.x, y: s.y });
+    }
+    m.dirty = m.samples.length > 0;
+    return m;
+  }
+}
+
+// Median feature vector over candidates (robust center for outlier drop).
+export function medianFeatures(list) {
+  if (list.length === 0) return null;
+  const d = list[0].length;
+  const med = new Array(d);
+  for (let i = 0; i < d; i++) {
+    const col = list.map((v) => v[i]).sort((a, b) => a - b);
+    med[i] = col[Math.floor(col.length / 2)];
+  }
+  return med;
+}
+
+export function l1dist(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
+  return s;
 }

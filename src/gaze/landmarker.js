@@ -17,7 +17,7 @@
 
 import { GazeProvider } from './provider.js';
 import { EyeIndices } from '../overlay.js';
-import { RidgeGazeMapper } from './ridge.js';
+import { RidgeGazeMapper, eyeFeatures, concatEyes, medianFeatures, l1dist } from './ridge.js';
 
 const EYE_PAD_PX = 8;
 const MIN_PATCH_PX = 4;
@@ -112,6 +112,56 @@ export class LandmarkerGazeProvider extends GazeProvider {
   reset() {
     this.mapper.clear();
     this.smoother.reset();
+    this.clearPersisted();
+  }
+
+  // --- Calibration persistence (mapper only — features, never images). ---
+
+  persistKey() {
+    return 'gazeScroll.landmarker.v1';
+  }
+
+  save() {
+    try {
+      if (this.mapper.count === 0) return false;
+      localStorage.setItem(
+        this.persistKey(),
+        JSON.stringify({
+          savedAt: Date.now(),
+          viewport: { w: window.innerWidth, h: window.innerHeight },
+          map: this.mapper.toJSON(),
+        }),
+      );
+      return true;
+    } catch {
+      return false; // private mode / quota — session still works
+    }
+  }
+
+  // Returns { restored, savedAt, viewport } or null. Called at start when
+  // the mapper is empty so a returning user skips calibration.
+  load() {
+    try {
+      if (this.mapper.count > 0) return null;
+      const raw = localStorage.getItem(this.persistKey());
+      if (!raw) return null;
+      const json = JSON.parse(raw);
+      if (!json || !json.map) return null;
+      const map = RidgeGazeMapper.fromJSON(json.map);
+      if (map.count === 0) return null;
+      this.mapper = map;
+      return { restored: map.count, savedAt: json.savedAt ?? null, viewport: json.viewport ?? null };
+    } catch {
+      return null;
+    }
+  }
+
+  clearPersisted() {
+    try {
+      localStorage.removeItem(this.persistKey());
+    } catch {
+      /* ignore */
+    }
   }
 
   async start() {
@@ -125,6 +175,19 @@ export class LandmarkerGazeProvider extends GazeProvider {
       window.webgazer?.pause?.();
     } catch {
       /* optional */
+    }
+    // Returning user? Restore persisted mapping so gaze works immediately.
+    this.restoredInfo = null;
+    try {
+      this.restoredInfo = this.load();
+      if (this.restoredInfo) {
+        console.info(
+          `[landmarker] restored ${this.restoredInfo.restored} samples ` +
+            `from ${new Date(this.restoredInfo.savedAt).toLocaleString()}`,
+        );
+      }
+    } catch {
+      /* fresh start */
     }
     this.running = true;
     this.timer = setInterval(() => this.#tick(), this.tickMs);
@@ -184,9 +247,10 @@ export class LandmarkerGazeProvider extends GazeProvider {
   // malformed eye objects instead of throwing, and counting unstored taps
   // is the fake-complete trap.
   // Calibration write path: returns taps actually stored (0 = nothing
-  // recorded). Our own store pushes unconditionally for finite targets, so
-  // a 0 here means the eye data itself was unusable — never a silent
-  // downstream drop.
+  // recorded). Robust: collects up to taps+2 observations, drops outliers
+  // by distance to the median feature vector (blinks, mid-saccade frames),
+  // keeps the best `taps`. Our own store pushes unconditionally, so a 0
+  // here means the eye data itself was unusable.
   async calibrateAt(x, y) {
     try {
       const video = this.getVideo?.();
@@ -194,25 +258,42 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-video';
         return 0;
       }
-      const r = await this.faceDetector.detect(video, performance.now());
-      if (!r || !r.positions || r.positions.length < 100) {
-        this.lastNullReason = 'no-face';
+      const candidates = [];
+      let sawFace = false;
+      let sawEyes = false;
+      const attempts = this.taps + 2;
+      for (let a = 0; a < attempts; a++) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await this.faceDetector.detect(video, performance.now());
+        if (!r || !r.positions || r.positions.length < 100) continue;
+        sawFace = true;
+        const eyes = buildEyeObjects(
+          r.positions,
+          video.videoWidth,
+          video.videoHeight,
+          this.createGrabber(video, this),
+        );
+        if (!eyes) continue;
+        sawEyes = true;
+        candidates.push({
+          eyes,
+          feats: concatEyes(
+            eyeFeatures(eyes.left.patch, this.mapper.eyeW, this.mapper.eyeH),
+            eyeFeatures(eyes.right.patch, this.mapper.eyeW, this.mapper.eyeH),
+          ),
+        });
+        if (candidates.length >= attempts) break;
+      }
+      if (candidates.length < 3) {
+        this.lastNullReason = !sawFace ? 'no-face' : !sawEyes ? 'no-eyes' : 'partial';
         return 0;
       }
-      const eyes = buildEyeObjects(
-        r.positions,
-        video.videoWidth,
-        video.videoHeight,
-        this.createGrabber(video, this),
-      );
-      if (!eyes) {
-        this.lastNullReason = 'no-eyes';
-        return 0;
-      }
+      const med = medianFeatures(candidates.map((c) => c.feats));
+      candidates.sort((a, b) => l1dist(a.feats, med) - l1dist(b.feats, med));
+      const kept = candidates.slice(0, this.taps);
       const before = this.mapper.count;
-      let wrote = 0;
-      for (let i = 0; i < this.taps; i++) {
-        if (this.mapper.addSample(eyes.left.patch, eyes.right.patch, x, y)) wrote++;
+      for (const c of kept) {
+        this.mapper.addSample(c.eyes.left.patch, c.eyes.right.patch, x, y);
       }
       const delta = this.mapper.count - before;
       if (delta <= 0) {

@@ -45,6 +45,10 @@ canvas). So the regression is now ours as well:
   partial pivoting (~50ms for a 45-tap calibration; lazy on first predict).
 - Predict: two dot products (~microseconds at 15Hz).
 - Writes are verified by store delta; counters only count stored taps.
+- Calibration data persists to localStorage (features only, ~140KB for a
+  full session) and restores on next visit; Reset clears it.
+- Robust taps: up to taps+2 observations per point, median-kept best
+  (blinks and mid-saccade frames dropped).
 
 Selectable via Controls → Estimator (`landmarker` default, `webgazer`
 classic for builds whose bundle is healthy). Both emit the identical
@@ -122,7 +126,7 @@ velocity. Reading (fixated, slow) and Scanning (>900px/s) and Idle
 |---|---|
 | smooth | `target = dir · maxVel · conf`, accel-limited ramp (2600px/s²) |
 | discrete | one 320px chunk per 1200ms cooldown on held intent |
-| edge | `vel = depth01 · maxVel · 2.2`, depth ramps over ~1s of dwell |
+| edge (default) | direction from the **sustained dwell itself** (bottom→down, top→up), `vel = depth01 · maxVel · 2.2`; the ~1s dwell timer is the activation gate, so noisy gaze that never reaches a directional intent still scrolls |
 | reading | smooth × 0.6, gated on gaze-on-text AND (progressing OR near-end) |
 | predictive | smooth × 0.45, starts when text-below < 0.35 (pre-reveal) |
 | off | always 0 |

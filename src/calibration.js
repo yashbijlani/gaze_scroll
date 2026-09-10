@@ -111,7 +111,7 @@ export class CalibrationFlow {
       done += 1;
       // eslint-disable-next-line no-await-in-loop
       const errPx = await this.#liveError(x, y);
-      if (errPx != null) errors.push(errPx);
+      if (errPx != null) errors.push({ i: done, err: errPx });
       if (onProgress) onProgress(done, pts.length);
     }
     const quality = this.#score(errors, done, pts.length);
@@ -275,9 +275,17 @@ export class CalibrationFlow {
     if (errors.length === 0) {
       return { label: 'unknown', meanErrPx: null, points: done, at: Date.now() };
     }
-    const mean = errors.reduce((a, b) => a + b, 0) / errors.length;
+    const mean = errors.reduce((a, b) => a + b.err, 0) / errors.length;
+    const worst = errors.reduce((a, b) => (b.err > a.err ? b : a), errors[0]);
     const label = mean < 120 ? 'good' : mean < 200 ? 'fair' : 'poor';
-    return { label, meanErrPx: Math.round(mean), points: done, at: Date.now() };
+    return {
+      label,
+      meanErrPx: Math.round(mean),
+      worstPoint: worst.i,
+      worstErrPx: Math.round(worst.err),
+      points: done,
+      at: Date.now(),
+    };
   }
 
   #summary(quality) {
@@ -285,7 +293,10 @@ export class CalibrationFlow {
       const detail =
         quality.meanErrPx == null
           ? 'No live predictions were available to score against.'
-          : `Mean error ≈ ${quality.meanErrPx}px.`;
+          : `Mean error ≈ ${quality.meanErrPx}px` +
+            (quality.worstPoint != null
+              ? ` (worst: point ${quality.worstPoint} ≈ ${quality.worstErrPx}px — redo that corner if scrolling feels off there).`
+              : '.');
       const stored =
         quality.stored == null
           ? ''

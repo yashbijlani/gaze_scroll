@@ -193,8 +193,7 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     assert.equal(ok.lastNullReason, null);
   });
 
-  it('own mapper stores verifiably — counters only count stored taps', async () => {
-    const tracker = {
+  it('own mapper stores verifiably — counters only count stored taps', async () => {    const tracker = {
       calibratedCount: 0,
       async begin() {},
       end() {},
@@ -211,5 +210,72 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     assert.equal(await p.calibrateAt(100, 200), 5);
     assert.equal(p.storedCount(), 5);
     assert.equal(tracker.calibratedCount, 5);
+  });
+
+  it('robust taps: outlier frames are dropped, best kept', async () => {
+    let calls = 0;
+    const flakyDetector = {
+      detect: async () => {
+        calls++;
+        // Every 3rd frame is garbage (blink-like): degenerate landmarks.
+        if (calls % 3 === 0) return { positions: Array.from({ length: 478 }, () => [0, 0, 0]) };
+        return { positions: fakePositions() };
+      },
+    };
+    const tracker = {
+      calibratedCount: 0,
+      async begin() {},
+      end() {},
+      computeConfidence: () => 0.9,
+    };
+    const p = new LandmarkerGazeProvider({
+      tracker,
+      smoother: { filter: (x, y) => ({ x, y }), reset() {} },
+      faceDetector: flakyDetector,
+      getVideo: () => stubVideo,
+      createGrabber: stubGrabber,
+      taps: 3,
+    });
+    const stored = await p.calibrateAt(100, 200);
+    assert.equal(stored, 3, 'keeps best 3 despite bad frames');
+    assert.equal(p.lastNullReason, null);
+  });
+
+  it('persistence round-trips through localStorage', async () => {
+    const store = {};
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (k) => store[k] ?? null,
+        setItem: (k, v) => { store[k] = String(v); },
+        removeItem: (k) => { delete store[k]; },
+      },
+      configurable: true,
+    });
+    const mkTracker = () => ({
+      calibratedCount: 0,
+      async begin() {},
+      end() {},
+      computeConfidence: () => 0.9,
+    });
+    const mk = () => new LandmarkerGazeProvider({
+      tracker: mkTracker(),
+      smoother: { filter: (x, y) => ({ x, y }), reset() {} },
+      faceDetector: { detect: async () => ({ positions: fakePositions() }) },
+      getVideo: () => stubVideo,
+      createGrabber: stubGrabber,
+      taps: 2,
+    });
+    const p1 = mk();
+    assert.equal(p1.save(), false, 'nothing to save when empty');
+    await p1.calibrateAt(100, 200);
+    assert.equal(p1.save(), true);
+    const p2 = mk();
+    const info = p2.load();
+    assert.ok(info && info.restored === 2, `restored 2, got ${JSON.stringify(info)}`);
+    assert.ok(await p2.predictOnce(), 'restored model predicts');
+    p2.reset();
+    assert.equal(p2.storedCount(), 0);
+    assert.equal(store['gazeScroll.landmarker.v1'] ?? null, null, 'reset clears persisted copy');
+    delete globalThis.localStorage;
   });
 });
