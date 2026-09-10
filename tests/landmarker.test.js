@@ -104,26 +104,29 @@ describe('LandmarkerGazeProvider', () => {
     await p.stop();
   });
 
-  it('calibrateAt stores taps and counts them; 0 without a face', async () => {
+  it('calibrateAt stores taps in the provider mapper; 0 without a face', async () => {
     const p = makeProvider(fakePositions());
     assert.equal(await p.calibrateAt(100, 200), 3);
-    assert.equal(reg.getData().length, 3);
+    assert.equal(p.storedCount(), 3);
     assert.equal(tracker.calibratedCount, 3);
     const noFace = makeProvider(null);
     assert.equal(await noFace.calibrateAt(100, 200), 0);
     assert.equal(p.storedCount(), 3);
   });
 
-  it('predictOnce mirrors the regression (null before data)', async () => {
-    reg.data.length = 0;
+  it('predictOnce is null before data, near target after', async () => {
     const p = makeProvider(fakePositions());
     assert.equal(await p.predictOnce(), null);
+    assert.equal(p.lastNullReason, 'no-prediction');
     await p.calibrateAt(100, 200);
-    assert.deepEqual(await p.predictOnce(), { x: 640, y: 400 });
+    const pred = await p.predictOnce();
+    assert.ok(pred, 'predicts after training');
+    assert.ok(Math.abs(pred.x - 100) < 60 && Math.abs(pred.y - 200) < 60,
+      `near target, got ${JSON.stringify(pred)}`);
   });
 
-  it('tick emits normalized samples; stop() halts', async () => {    const p = makeProvider(fakePositions());
-    reg.data.length = 0;
+  it('tick emits normalized samples; stop() halts', async () => {
+    const p = makeProvider(fakePositions());
     await p.calibrateAt(100, 200);
     const got = [];
     p.subscribe((s) => got.push(s));
@@ -133,7 +136,7 @@ describe('LandmarkerGazeProvider', () => {
     const n = got.length;
     assert.ok(n >= 1, 'emitted while running');
     const s = got[0];
-    assert.equal(s.normalizedX, 640 / 1280);
+    assert.ok(Math.abs(s.normalizedX - 100 / 1280) < 0.05, `nx ≈ target: ${s.normalizedX}`);
     assert.equal(s.confidence, 0.9);
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(got.length, n, 'silent after stop');
@@ -175,38 +178,22 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     assert.equal(await noEyes.predictOnce(), null);
     assert.equal(noEyes.lastNullReason, 'no-eyes');
 
-    // no-model (regression API absent)
-    const prevWg = global.window.webgazer;
-    global.window.webgazer = {};
-    const noModel = baseProvider();
-    assert.equal(await noModel.predictOnce(), null);
-    assert.equal(noModel.lastNullReason, 'no-model');
-    assert.equal(await noModel.calibrateAt(10, 10), 0);
-    global.window.webgazer = prevWg;
+    // untrained mapper → no-prediction (own store, no external reg needed)
+    const untrained = baseProvider();
+    assert.equal(await untrained.predictOnce(), null);
+    assert.equal(untrained.lastNullReason, 'no-prediction');
+    assert.ok((await untrained.calibrateAt(10, 10)) > 0, 'own mapper always stores');
+    assert.ok(untrained.storedCount() > 0);
 
     // success clears the reason
     const ok = baseProvider();
     ok.lastNullReason = 'stale';
-    global.window.webgazer = { getRegression: () => [stubRegWithData()] };
-    function stubRegWithData() {
-      const r = stubReg();
-      r.data.push(true);
-      return r;
-    }
+    await ok.calibrateAt(100, 200);
     assert.ok(await ok.predictOnce());
     assert.equal(ok.lastNullReason, null);
-    global.window.webgazer = prevWg;
   });
 
-  it('verify-after-write: silently dropped taps return 0 (model-kept-0)', async () => {
-    // A build that accepts addData() without storing (no throw, no growth).
-    const droppingReg = {
-      addData() {},
-      predict: () => null,
-      getData: () => [],
-    };
-    const prevWg = global.window.webgazer;
-    global.window.webgazer = { getRegression: () => [droppingReg] };
+  it('own mapper stores verifiably — counters only count stored taps', async () => {
     const tracker = {
       calibratedCount: 0,
       async begin() {},
@@ -221,9 +208,8 @@ describe('LandmarkerGazeProvider failure reasons', () => {
       createGrabber: stubGrabber,
       taps: 5,
     });
-    assert.equal(await p.calibrateAt(100, 200), 0);
-    assert.equal(p.lastNullReason, 'model-kept-0');
-    assert.equal(tracker.calibratedCount, 0, ' counters must not count unstored taps');
-    global.window.webgazer = prevWg;
+    assert.equal(await p.calibrateAt(100, 200), 5);
+    assert.equal(p.storedCount(), 5);
+    assert.equal(tracker.calibratedCount, 5);
   });
 });

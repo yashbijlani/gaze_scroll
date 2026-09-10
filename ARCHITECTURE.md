@@ -235,7 +235,8 @@ subject of the first post-MVP milestone.
 | `src/camera.js` | `getUserMedia` capability detection. |
 | `src/tracker.js` | WebGazer wrapper: init, gaze subscription, calibration recording, confidence proxy. |
 | `src/gaze/provider.js` | `GazeProvider` abstraction: `WebGazerProvider` (normalized stream) + `MockProvider` (tests/replay). |
-| `src/gaze/landmarker.js` | `LandmarkerGazeProvider`: drives WebGazer regression with own eye patches (default estimator). |
+| `src/gaze/landmarker.js` | `LandmarkerGazeProvider`: own eye patches + own ridge map (default estimator). |
+| `src/gaze/ridge.js` | `RidgeGazeMapper`: grayscale eye features, ridge train/predict, pure + tested. |
 | `src/gaze/velocity.js` | EMA velocity/speed + direction persistence. |
 | `src/smoothing.js` | One Euro filter (per-axis) for low-lag jitter reduction. |
 | `src/fixation.js` | Dispersion-threshold (I-DT) fixation/saccade classifier. |

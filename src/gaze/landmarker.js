@@ -17,6 +17,7 @@
 
 import { GazeProvider } from './provider.js';
 import { EyeIndices } from '../overlay.js';
+import { RidgeGazeMapper } from './ridge.js';
 
 const EYE_PAD_PX = 8;
 const MIN_PATCH_PX = 4;
@@ -81,7 +82,6 @@ export class LandmarkerGazeProvider extends GazeProvider {
     faceDetector,
     getVideo,
     createGrabber = null, // (video) => (x,y,w,h) => ImageData; default canvas impl
-    regIndex = 0,
     tickMs = 66,
     taps = 5,
   }) {
@@ -91,34 +91,27 @@ export class LandmarkerGazeProvider extends GazeProvider {
     this.faceDetector = faceDetector;
     this.getVideo = getVideo;
     this.createGrabber = createGrabber ?? defaultGrabber;
-    this.regIndex = regIndex;
     this.tickMs = tickMs;
     this.taps = taps;
+    this.mapper = new RidgeGazeMapper();
     this.timer = null;
     this.busy = false;
     this.lastT = 0;
     this.lastFaceT = 0;
     this.frameCanvas = null;
-    // Last failure reason ('no-video' | 'no-face' | 'no-eyes' | 'no-model' |
+    // Last failure reason ('no-video' | 'no-face' | 'no-eyes' |
     // 'no-prediction' | null on success). Surfaced in the UI so a dead
     // calibration point can say WHY instead of just repeating.
     this.lastNullReason = null;
   }
 
-  reg() {
-    try {
-      return window.webgazer?.getRegression?.()?.[this.regIndex] ?? null;
-    } catch {
-      return null;
-    }
+  storedCount() {
+    return this.mapper.count;
   }
 
-  storedCount() {
-    try {
-      return this.reg()?.getData?.()?.length ?? null;
-    } catch {
-      return null;
-    }
+  reset() {
+    this.mapper.clear();
+    this.smoother.reset();
   }
 
   async start() {
@@ -173,17 +166,13 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-eyes';
         return null;
       }
-      if (!this.reg() || typeof this.reg().predict !== 'function') {
-        this.lastNullReason = 'no-model';
-        return null;
-      }
-      const pred = this.reg().predict(eyes);
-      if (!pred || !Number.isFinite(pred.x) || !Number.isFinite(pred.y)) {
+      const pred = this.mapper.predict(eyes.left.patch, eyes.right.patch);
+      if (!pred) {
         this.lastNullReason = 'no-prediction';
         return null;
       }
       this.lastNullReason = null;
-      return { x: pred.x, y: pred.y };
+      return pred;
     } catch {
       this.lastNullReason = 'no-prediction';
       return null;
@@ -194,24 +183,12 @@ export class LandmarkerGazeProvider extends GazeProvider {
   // recorded). Verifies via getData() delta — some builds silently drop
   // malformed eye objects instead of throwing, and counting unstored taps
   // is the fake-complete trap.
+  // Calibration write path: returns taps actually stored (0 = nothing
+  // recorded). Our own store pushes unconditionally for finite targets, so
+  // a 0 here means the eye data itself was unusable — never a silent
+  // downstream drop.
   async calibrateAt(x, y) {
     try {
-      const reg = this.reg();
-      if (!reg || typeof reg.addData !== 'function') {
-        this.lastNullReason = 'no-model';
-        console.warn('[landmarker] regression addData() missing — cannot record');
-        return 0;
-      }
-      if (!this._regLogged) {
-        this._regLogged = true;
-        console.info('[landmarker] reg api', {
-          ctor: reg?.constructor?.name ?? typeof reg,
-          hasAddData: typeof reg.addData,
-          hasPredict: typeof reg.predict,
-          hasGetData: typeof reg.getData,
-          dataLength: this.storedCount(),
-        });
-      }
       const video = this.getVideo?.();
       if (!video || video.videoWidth <= 0 || video.readyState < 2) {
         this.lastNullReason = 'no-video';
@@ -232,24 +209,14 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-eyes';
         return 0;
       }
-      const before = this.storedCount();
-      for (let i = 0; i < this.taps; i++) reg.addData(eyes, [x, y]);
-      const after = this.storedCount();
-      if (before == null || after == null) {
-        // Store size unknowable — trust the write, keep old behavior.
-        if (this.tracker && Number.isFinite(this.tracker.calibratedCount)) {
-          this.tracker.calibratedCount += this.taps;
-        }
-        this.lastNullReason = null;
-        return this.taps;
+      const before = this.mapper.count;
+      let wrote = 0;
+      for (let i = 0; i < this.taps; i++) {
+        if (this.mapper.addSample(eyes.left.patch, eyes.right.patch, x, y)) wrote++;
       }
-      const delta = after - before;
+      const delta = this.mapper.count - before;
       if (delta <= 0) {
-        this.lastNullReason = 'model-kept-0';
-        console.warn('[landmarker] addData ran but store stayed at', after, {
-          eyeLeft: [eyes.left.width, eyes.left.height],
-          eyeRight: [eyes.right.width, eyes.right.height],
-        });
+        this.lastNullReason = 'no-eyes';
         return 0;
       }
       if (this.tracker && Number.isFinite(this.tracker.calibratedCount)) {

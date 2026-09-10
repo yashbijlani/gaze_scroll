@@ -612,6 +612,7 @@ async function onCalibrate() {
 
 async function onResetCalibration() {
   await tracker.clear();
+  landmarkerProvider.reset();
   smoother.reset();
   eventDetector.reset();
   intentEngine.reset();

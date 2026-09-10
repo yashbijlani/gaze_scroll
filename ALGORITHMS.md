@@ -31,22 +31,24 @@ in diagnostics. WebGazer still owns gaze regression for now; if its
 predictions stay null while landmarks flow, the estimator itself is the
 next replacement target (see provider abstraction).
 
-## 0.6 Gaze without WebGazer's detector (`gaze/landmarker.js`)
+## 0.6 Gaze without WebGazer's detector — or its regression (`gaze/landmarker.js`, `gaze/ridge.js`)
 
 When the bundled detector is blind, calibration taps reach no model and
 predictions stay null forever — the fake-complete trap. The landmarker
-provider fixes this by reusing WebGazer's *regression* (plain ridge math
-over eye-appearance patches) while replacing its *features*: eye patches
-are cut from our own FaceLandmarker landmarks (same eye-index topology,
-8px padded boxes clamped to the frame) plus the live video frame, in the
-exact `{left: {patch, imagex, imagey, width, height}, right}` shape the
-tracker produces, so train and predict preprocessing match. Calibration
-writes via `reg.addData` and returns taps-stored (0 repeats the point);
-the loop predicts via `reg.predict` at ~15Hz through the shared One Euro
-smoother, emitting the identical normalized sample contract. WebGazer's
-own loop is paused while it drives (CPU savings; its camera stream stays
-open). Selectable via Controls → Estimator (`landmarker` default,
-`webgazer` classic).
+provider first tried reusing WebGazer's *regression* with our own eye
+patches, but diagnostics proved that object dead too (`ctor: ''`,
+`addData` silently dropping, predictions throwing on a null internal
+canvas). So the regression is now ours as well:
+
+- Features: each eye patch → 16×12 grayscale + bias (385 dims).
+- Train: ridge `(XᵀX + λI) w = Xᵀt` per axis, Gaussian elimination with
+  partial pivoting (~50ms for a 45-tap calibration; lazy on first predict).
+- Predict: two dot products (~microseconds at 15Hz).
+- Writes are verified by store delta; counters only count stored taps.
+
+Selectable via Controls → Estimator (`landmarker` default, `webgazer`
+classic for builds whose bundle is healthy). Both emit the identical
+normalized sample contract, so everything downstream is untouched.
 
 ## 1. Smoothing — One Euro filter (`smoothing.js`)
 
