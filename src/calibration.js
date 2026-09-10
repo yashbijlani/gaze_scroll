@@ -96,7 +96,12 @@ export class CalibrationFlow {
         // Nothing reached the model (no usable eye data at click time):
         // repeat the SAME point with an explanation instead of advancing.
         // eslint-disable-next-line no-await-in-loop
-        this.#note('Point not recorded — no usable eye data. Keep looking at the dot and click again.');
+        this.#note(
+          'Point not recorded — no usable eye data at click time. ' +
+            'Keep looking at the dot and click again. If this repeats, ' +
+            'check the preview is live with green eye boxes, then ' +
+            'press “Restart camera” in Controls.',
+        );
         continue;
       }
       i += 1;
