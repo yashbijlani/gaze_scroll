@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gaze Scroll — MVP (track, calibrate, log — no auto-scroll)</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Gaze Scroll <span class="badge">MVP</span></h1>
+      <p class="subtitle">Webcam gaze estimation prototype — tracking only, no automatic scrolling.</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <h2>Controls</h2>
+        <div class="status" id="status">Loading…</div>
+        <div class="stats" id="stats">0 samples/s</div>
+        <div class="btn-row">
+          <button id="btn-calibrate" disabled>Calibrate</button>
+          <button id="btn-recalibrate" disabled>Reset calibration</button>
+        </div>
+        <div class="btn-row">
+          <label><input type="checkbox" id="chk-video" checked /> Camera overlay</label>
+          <label><input type="checkbox" id="chk-cursor" checked /> Gaze cursor</label>
+        </div>
+        <div class="btn-row">
+          <button id="btn-download" disabled>Download gaze log (CSV)</button>
+          <button id="btn-clear-log" disabled>Clear log</button>
+        </div>
+        <div class="cal-status" id="cal-status">Not calibrated.</div>
+      </section>
+
+      <article class="panel content">
+        <h2>Reading sample</h2>
+        <p>
+          This page is the future scroll target. For now it is just a stand-in
+          article so you have something natural to look at while testing gaze
+          tracking, calibration accuracy, and logging.
+        </p>
+        <p>
+          Eye-tracked scrolling will come later, built on top of the signal
+          pipeline being validated here: raw predictions from WebGazer, a One
+          Euro smoothing filter, a dispersion-based fixation detector, and a
+          confidence proxy for every sample.
+        </p>
+        <p>
+          Try looking at the four corners and edges of the screen. Watch the
+          gaze cursor and the log panel. Corners are usually the hardest region
+          for webcam regression models — note where the estimate breaks down.
+        </p>
+        <p>
+          Good lighting on your face, no strong backlight, and a stable head
+          position give the best results. Glasses with reflections and low
+          light degrade the track noticeably.
+        </p>
+        <p>
+          Calibration records labelled samples (you look at a dot, then click
+          it) and feeds them to WebGazer's ridge regression. Everyday clicks
+          and cursor moves keep training it implicitly while you browse.
+        </p>
+      </article>
+
+      <aside class="panel debug">
+        <h2>Gaze log <span class="muted" id="log-count">0 samples</span></h2>
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>t (s)</th>
+              <th>raw x,y</th>
+              <th>smooth x,y</th>
+              <th>conf</th>
+              <th>state</th>
+            </tr>
+          </thead>
+          <tbody id="log-body">
+            <tr><td colspan="5" class="muted">No samples yet.</td></tr>
+          </tbody>
+        </table>
+      </aside>
+    </main>
+
+    <!-- Fullscreen consent gate: explicit opt-in before the camera starts. -->
+    <div id="consent-gate" class="consent">
+      <div class="consent-card">
+        <h2>Webcam eye tracking</h2>
+        <p>
+          This prototype uses your webcam to estimate where you are looking.
+          <strong>All video processing happens on this device</strong> — no
+          video frames are sent anywhere.
+        </p>
+        <p class="muted">Requires a secure context (localhost or HTTPS) and a Chromium/Firefox/Safari browser.</p>
+        <button id="btn-enable">Enable camera &amp; tracking</button>
+        <p class="consent-error" id="consent-error" role="alert" hidden></p>
+      </div>
+    </div>
+
+    <!-- Fullscreen layer for the N-point calibration flow. -->
+    <div id="calibration-layer" class="cal-layer" hidden></div>
+
+    <!-- Our own gaze cursor (smoothed). WebGazer's internal dot is disabled. -->
+    <div id="gaze-cursor" class="gaze-cursor" hidden></div>
+
+    <!-- WebGazer 2.x as a global script (UMD). Must execute before main.js;
+         main.js additionally waits for window.webgazer with a timeout. -->
+    <script src="https://cdn.jsdelivr.net/npm/webgazer@2.0.1/dist/webgazer.min.js" defer></script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
