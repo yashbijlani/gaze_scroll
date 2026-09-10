@@ -76,12 +76,14 @@ function captureError(kind, message) {
 window.addEventListener('error', (e) => captureError('error', e.message || e.error?.message || e.error));
 window.addEventListener('unhandledrejection', (e) =>
   captureError('unhandledrejection', e.reason?.message ?? e.reason),
-);const smoother = new GazeSmoother(CONFIG.smoothing);
+);
+const smoother = new GazeSmoother(CONFIG.smoothing);
 const overlay = new Overlay({ cursorEl: els.cursor });
 const calibration = new CalibrationFlow(tracker, CONFIG.calibration, els.calLayer);
 const logger = new GazeLogger(CONFIG.logging);
 // Gaze → evidence → intent → action pipeline (ARCHITECTURE.md §3).
 const provider = new WebGazerProvider({ tracker, smoother });
+const faceDetector = new StandaloneFaceDetector(CONFIG.face);
 const activeVideo = () =>
   overlay.findWebgazerVideo() ?? document.getElementById('gaze-preview-fallback');
 const landmarkerProvider = new LandmarkerGazeProvider({
@@ -111,7 +113,6 @@ const intentEngine = new IntentEngine(
 const readingTracker = new ReadingTracker();
 const scrollController = new ScrollController(CONFIG.scroll, null);
 const recorder = new SessionRecorder();
-const faceDetector = new StandaloneFaceDetector(CONFIG.face);
 const lab = new LabController();
 let replay = null;
 let replaying = false;
