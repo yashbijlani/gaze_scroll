@@ -17,7 +17,17 @@ export class CalibrationFlow {
     this.layer = layerEl;
     this.running = false;
     this.skipped = false;
+    this.faceCheck = null; // () => bool; set by main.js (face seen recently)
     this.lastQuality = this.#load();
+  }
+
+  // Points only advance while a face is detected — otherwise WebGazer's
+  // recordScreenPosition stores nothing (no eye features) and the user gets
+  // a fake "complete" that trained nothing. This is the "is it doing
+  // anything?" fix: the UI refuses to take a blind point.
+  setFaceCheck(fn) {
+    this.faceCheck = fn;
+    return this;
   }
 
   positions() {
@@ -124,18 +134,24 @@ export class CalibrationFlow {
     return new Promise((resolve) => {
       this.layer.innerHTML =
         `<div class="cal-hint">Look at the dot and click it (${i}/${n})</div>` +
+        `<div class="cal-face-warn" hidden>⚠ No face detected — move into frame and improve lighting, then click the dot.</div>` +
         `<button class="cal-target" style="left:${x}px;top:${y}px" ` +
         `aria-label="calibration point ${i} of ${n}"></button>` +
         `<button class="cal-skip" data-cal-skip-point>Skip calibration</button>`;
       const target = this.layer.querySelector('.cal-target');
+      const warn = this.layer.querySelector('.cal-face-warn');
       target.focus();
       target.addEventListener(
         'click',
         (e) => {
           e.stopPropagation();
+          if (this.faceCheck && !this.faceCheck()) {
+            if (warn) warn.hidden = false;
+            target.focus();
+            return; // stay on this point until a face is visible
+          }
           resolve();
         },
-        { once: true },
       );
       this.layer.querySelector('[data-cal-skip-point]').addEventListener(
         'click',

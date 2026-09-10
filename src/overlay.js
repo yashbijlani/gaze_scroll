@@ -1,5 +1,37 @@
-// Debug overlay: positions WebGazer's camera preview and renders our own
-// (smoothed) gaze cursor. WebGazer's internal gaze dot stays disabled.
+// MediaPipe FaceMesh eye landmark indices (from the TFFacemesh tracker).
+// Used to draw eye boxes from raw landmark arrays without WebGazer's DOM.
+export const EyeIndices = {
+  left: [466, 388, 387, 386, 385, 384, 398, 263, 249, 390, 373, 374, 380, 381, 382, 362],
+  right: [246, 161, 160, 159, 158, 157, 173, 33, 7, 163, 144, 145, 153, 154, 155, 133],
+};
+
+// Pure mapping: video-pixel landmark → canvas CSS pixels. Exported for tests.
+export function mapLandmarkToCanvas(x, y, videoW, videoH, canvasW, canvasH, mirrored) {
+  const nx = videoW > 0 ? x / videoW : 0;
+  const ny = videoH > 0 ? y / videoH : 0;
+  const cx = (mirrored ? 1 - nx : nx) * canvasW;
+  const cy = ny * canvasH;
+  return [cx, cy];
+}
+
+function bboxOf(indices, positions, videoW, videoH, cw, ch, mirrored) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const i of indices) {
+    const p = positions[i];
+    if (!p) continue;
+    const [cx, cy] = mapLandmarkToCanvas(p[0], p[1], videoW, videoH, cw, ch, mirrored);
+    if (cx < minX) minX = cx;
+    if (cy < minY) minY = cy;
+    if (cx > maxX) maxX = cx;
+    if (cy > maxY) maxY = cy;
+  }
+  if (!Number.isFinite(minX)) return null;
+  const pad = 6;
+  return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+}
 //
 // Two preview paths:
 // 1. WebGazer's own <video> element (preferred — same stream, no second
@@ -142,6 +174,66 @@ export class Overlay {
     }
   }
 
+  // Draw our own face/eye overlay on a canvas placed over the preview
+  // video. Independent of WebGazer's internal overlay canvases (which are
+  // broken on some builds). positions: array of [x,y,z] in video pixels
+  // from getTracker().getPositions(). Returns landmark count (0 = none).
+  renderFaceOverlay(canvas, video, positions) {
+    try {
+      if (!canvas || !video) return 0;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh || !positions || positions.length < 100) return 0;
+      // Match the canvas to the displayed video box.
+      const rect = video.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return 0;
+      if (canvas.width !== Math.round(rect.width) || canvas.height !== Math.round(rect.height)) {
+        canvas.width = Math.round(rect.width);
+        canvas.height = Math.round(rect.height);
+      }
+      canvas.style.display = this.videoVisible ? 'block' : 'none';
+      if (!this.videoVisible) return positions.length;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Position the canvas exactly over the video.
+      const cs = canvas.style;
+      cs.position = 'fixed';
+      cs.left = `${rect.left}px`;
+      cs.top = `${rect.top}px`;
+      cs.zIndex = '1201';
+      cs.pointerEvents = 'none';
+      const mirrored = true; // both preview paths mirror the video
+      // All landmarks, faint.
+      ctx.fillStyle = 'rgba(50,238,219,0.5)';
+      for (const p of positions) {
+        if (!p) continue;
+        const [cx, cy] = mapLandmarkToCanvas(p[0], p[1], vw, vh, canvas.width, canvas.height, mirrored);
+        ctx.fillRect(cx, cy, 1.5, 1.5);
+      }
+      // Eye boxes, bright green.
+      ctx.strokeStyle = '#3ddc84';
+      ctx.lineWidth = 2;
+      for (const side of ['left', 'right']) {
+        const box = bboxOf(EyeIndices[side], positions, vw, vh, canvas.width, canvas.height, mirrored);
+        if (box) ctx.strokeRect(box.x, box.y, box.w, box.h);
+      }
+      return positions.length;
+    } catch (err) {
+      console.warn('face overlay skipped', err);
+      return 0;
+    }
+  }
+
+  hideFaceOverlay(canvas) {
+    try {
+      if (canvas) {
+        canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.style.display = 'none';
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   drawGaze(x, y, confidence, fixation) {
     const el = this.cursorEl;
     el.hidden = false;

@@ -22,6 +22,7 @@ export class LabController {
       intentconf: $('lab-intentconf'),
       scrollvel: $('lab-scrollvel'),
       tracking: $('lab-tracking'),
+      face: $('lab-face'),
       calq: $('lab-calq'),
       target: $('lab-target'),
       sigEdge: $('sig-edge'),
@@ -123,6 +124,7 @@ export class LabController {
     if (e.intentconf) e.intentconf.textContent = s.intent ? fmt(s.intent.confidence, 2) : '—';
     if (e.scrollvel) e.scrollvel.textContent = fmt(s.scrollVel, 0);
     if (e.tracking) e.tracking.textContent = s.tracking ?? '—';
+    if (e.face) e.face.textContent = s.face ?? '—';
     if (e.calq) e.calq.textContent = s.calQuality ?? '—';
     if (e.target) e.target.textContent = s.dom ? `${s.dom.role}${s.reading ? (s.reading.onText ? ' · on-text' : ' · off-text') : ''}` : '—';
     const sig = s.intent?.signals;

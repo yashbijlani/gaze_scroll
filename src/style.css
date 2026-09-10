@@ -153,6 +153,14 @@ button.danger {
   background: transparent; color: var(--muted);
   border: 1px solid #2b313c;
 }
+.cal-face-warn {
+  position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+  background: rgba(255, 176, 32, 0.14);
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
 .cal-target {
   position: fixed;
   width: 28px; height: 28px;
@@ -176,6 +184,11 @@ button.danger {
   border-radius: 50%;
   pointer-events: none;
   will-change: transform, width, height, opacity;
+}
+/* Our face/eye overlay canvas (positioned over the preview by JS). */
+#face-overlay {
+  position: fixed; z-index: 1201;
+  pointer-events: none;
 }
 .gaze-cursor[data-state="fixation"] { border-color: var(--good); }
 .gaze-cursor[data-state="unknown"] { border-color: var(--muted); }

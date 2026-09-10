@@ -183,6 +183,7 @@
             <dt>intent conf</dt><dd id="lab-intentconf">—</dd>
             <dt>scroll vel</dt><dd id="lab-scrollvel">—</dd>
             <dt>tracking</dt><dd id="lab-tracking">idle</dd>
+            <dt>face</dt><dd id="lab-face">—</dd>
             <dt>cal quality</dt><dd id="lab-calq">—</dd>
             <dt>gaze target</dt><dd id="lab-target">—</dd>
           </dl>
@@ -266,6 +267,9 @@
 
     <!-- Our own gaze cursor (smoothed). WebGazer's internal dot is disabled. -->
     <div id="gaze-cursor" class="gaze-cursor" hidden></div>
+
+    <!-- Our own face/eye overlay, drawn over the camera preview. -->
+    <canvas id="face-overlay" hidden></canvas>
 
     <!-- WebGazer 2.x as a global script (UMD). Must execute before main.js;
          main.js additionally waits for window.webgazer with a timeout. -->

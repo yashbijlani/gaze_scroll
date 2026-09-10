@@ -104,6 +104,8 @@ let trackingStartedAt = 0;
 let stallWarned = false;
 let enableInFlight = false;
 let wasVideoLive = false;
+let lastFaceT = 0; // last time a sample carried face/eye features
+let lastLandmarks = 0; // last time face landmarks were observed
 // Latest pipeline snapshot for the lab (written per sample, read at 10Hz).
 let latestSnapshot = null;
 let lastDomFullT = 0;
@@ -143,6 +145,7 @@ function handleSample(sample) {
   samplesThisSecond += 1;
   const t = sample?.timestamp ?? performance.now();
   if (sample && sample.x != null) lastGazeT = t;
+  if (sample?.hasFace) lastFaceT = t;
 
   const analysis = eventDetector.update(sample);
   if (analysis.lost) {
@@ -183,6 +186,7 @@ function handleSample(sample) {
     scrollVel: lastScrollVel,
     tracking: trackingLabel(sample),
     calQuality: calQualityLabel(),
+    face: faceLabel(t),
   };
   lab.pushTrail(
     sample.rawX != null ? { x: sample.rawX, y: sample.rawY } : null,
@@ -216,6 +220,43 @@ function calQualityLabel() {
   if (q.label === 'skipped') return `skipped (${q.points} pts)`;
   if (q.meanErrPx != null) return `${q.label} (~${q.meanErrPx}px)`;
   return q.label;
+}
+
+// Face presence from either channel (sample eye features or landmarks).
+function faceDetected(t = performance.now()) {
+  return t - lastFaceT < 1500 || t - lastLandmarks < 1500;
+}
+
+function faceLabel(t) {
+  if (!trackingRunning && !replaying) return '—';
+  return faceDetected(t) ? 'detected' : 'searching…';
+}
+
+// Poll WebGazer's landmark buffer and paint our own eye overlay over the
+// preview video. Returns landmark count (0 = detector sees no face).
+function updateFaceOverlay() {
+  const canvas = $('face-overlay');
+  if (!canvas) return 0;
+  try {
+    const video =
+      overlay.findWebgazerVideo() ?? document.getElementById('gaze-preview-fallback');
+    if (!video || !trackingRunning) {
+      overlay.hideFaceOverlay(canvas);
+      return 0;
+    }
+    const positions = window.webgazer?.getTracker?.()?.getPositions?.();
+    if (!positions || positions.length < 100) {
+      overlay.hideFaceOverlay(canvas);
+      return 0;
+    }
+    canvas.hidden = false;
+    const n = overlay.renderFaceOverlay(canvas, video, positions);
+    if (n > 0) lastLandmarks = performance.now();
+    else overlay.hideFaceOverlay(canvas);
+    return n;
+  } catch {
+    return 0;
+  }
 }
 
 function logPipeline(sample, analysis, intent, reading, dom) {
@@ -552,6 +593,7 @@ function updatePill() {
   const s = latestSnapshot?.sample;
   const conf = s?.confidence ?? 0;
   if (eventDetector.lost) return lab.setPill('lost', 'tracking lost');
+  if (!faceDetected()) return lab.setPill('low', 'no face detected');
   if (conf < (CONFIG.intent.minConfidence ?? 0.35)) return lab.setPill('low', 'low confidence');
   if (!autoScroll) return lab.setPill('paused', 'tracking · scroll off');
   if (scrollController.overridden()) return lab.setPill('paused', 'paused · you scrolled');
@@ -799,6 +841,7 @@ function init() {
     return;
   }
   setControlsEnabled(false);
+  calibration.setFaceCheck(() => faceDetected());
   els.btnEnable.addEventListener('click', onEnable);
   els.btnCalibrate.addEventListener('click', onCalibrate);
   els.btnRecalibrate.addEventListener('click', onResetCalibration);
@@ -828,7 +871,11 @@ function init() {
     const now = performance.now();
     if (now - lastLabRender < 100) return;
     lastLabRender = now;
-    if (latestSnapshot) lab.update(latestSnapshot);
+    updateFaceOverlay();
+    if (latestSnapshot) {
+      latestSnapshot.face = faceLabel(now);
+      lab.update(latestSnapshot);
+    }
     updatePill();
   }, 100);
   setInterval(() => {
