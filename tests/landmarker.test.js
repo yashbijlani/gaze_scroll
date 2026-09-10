@@ -160,8 +160,7 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     });
   }
 
-  it('names each failure stage', async () => {
-    // no-video
+  it('names each failure stage', async () => {    // no-video
     const noVideo = baseProvider({ getVideo: () => null });
     assert.equal(await noVideo.predictOnce(), null);
     assert.equal(noVideo.lastNullReason, 'no-video');
@@ -196,6 +195,35 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     }
     assert.ok(await ok.predictOnce());
     assert.equal(ok.lastNullReason, null);
+    global.window.webgazer = prevWg;
+  });
+
+  it('verify-after-write: silently dropped taps return 0 (model-kept-0)', async () => {
+    // A build that accepts addData() without storing (no throw, no growth).
+    const droppingReg = {
+      addData() {},
+      predict: () => null,
+      getData: () => [],
+    };
+    const prevWg = global.window.webgazer;
+    global.window.webgazer = { getRegression: () => [droppingReg] };
+    const tracker = {
+      calibratedCount: 0,
+      async begin() {},
+      end() {},
+      computeConfidence: () => 0.9,
+    };
+    const p = new LandmarkerGazeProvider({
+      tracker,
+      smoother: { filter: (x, y) => ({ x, y }), reset() {} },
+      faceDetector: { detect: async () => ({ positions: fakePositions() }) },
+      getVideo: () => stubVideo,
+      createGrabber: stubGrabber,
+      taps: 5,
+    });
+    assert.equal(await p.calibrateAt(100, 200), 0);
+    assert.equal(p.lastNullReason, 'model-kept-0');
+    assert.equal(tracker.calibratedCount, 0, ' counters must not count unstored taps');
     global.window.webgazer = prevWg;
   });
 });

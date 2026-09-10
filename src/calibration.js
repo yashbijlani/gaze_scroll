@@ -290,11 +290,15 @@ export class CalibrationFlow {
             ? ` ${quality.stored} eye samples stored in the model.`
             : ` WARNING: 0 eye samples reached the model — gaze will not work until points record successfully.`;
       const advice =
-        quality.label === 'poor'
-          ? 'Try better lighting, sit still, and recalibrate.'
-          : quality.label === 'fair'
-            ? 'Usable. Recalibrate if scrolling feels off.'
-            : 'Looks good.';
+        quality.stored === 0
+          ? 'Nothing reached the model — gaze cannot work yet. Recalibrate with steady light and a still head, or try the other Estimator.'
+          : quality.label === 'poor'
+            ? 'Try better lighting, sit still, and recalibrate.'
+            : quality.label === 'fair'
+              ? 'Usable. Recalibrate if scrolling feels off.'
+              : quality.label === 'unknown'
+                ? 'Recorded, but no live check was available.'
+                : 'Looks good.';
       this.layer.innerHTML =
         `<div class="cal-card"><h2>Calibration ${quality.label}</h2>` +
         `<p>${detail}${stored} ${advice}</p>` +

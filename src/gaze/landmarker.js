@@ -190,7 +190,10 @@ export class LandmarkerGazeProvider extends GazeProvider {
     }
   }
 
-  // Calibration write path: returns taps stored (0 = nothing recorded).
+  // Calibration write path: returns taps actually stored (0 = nothing
+  // recorded). Verifies via getData() delta — some builds silently drop
+  // malformed eye objects instead of throwing, and counting unstored taps
+  // is the fake-complete trap.
   async calibrateAt(x, y) {
     try {
       const reg = this.reg();
@@ -198,6 +201,16 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-model';
         console.warn('[landmarker] regression addData() missing — cannot record');
         return 0;
+      }
+      if (!this._regLogged) {
+        this._regLogged = true;
+        console.info('[landmarker] reg api', {
+          ctor: reg?.constructor?.name ?? typeof reg,
+          hasAddData: typeof reg.addData,
+          hasPredict: typeof reg.predict,
+          hasGetData: typeof reg.getData,
+          dataLength: this.storedCount(),
+        });
       }
       const video = this.getVideo?.();
       if (!video || video.videoWidth <= 0 || video.readyState < 2) {
@@ -219,12 +232,31 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-eyes';
         return 0;
       }
+      const before = this.storedCount();
       for (let i = 0; i < this.taps; i++) reg.addData(eyes, [x, y]);
+      const after = this.storedCount();
+      if (before == null || after == null) {
+        // Store size unknowable — trust the write, keep old behavior.
+        if (this.tracker && Number.isFinite(this.tracker.calibratedCount)) {
+          this.tracker.calibratedCount += this.taps;
+        }
+        this.lastNullReason = null;
+        return this.taps;
+      }
+      const delta = after - before;
+      if (delta <= 0) {
+        this.lastNullReason = 'model-kept-0';
+        console.warn('[landmarker] addData ran but store stayed at', after, {
+          eyeLeft: [eyes.left.width, eyes.left.height],
+          eyeRight: [eyes.right.width, eyes.right.height],
+        });
+        return 0;
+      }
       if (this.tracker && Number.isFinite(this.tracker.calibratedCount)) {
-        this.tracker.calibratedCount += this.taps;
+        this.tracker.calibratedCount += delta;
       }
       this.lastNullReason = null;
-      return this.taps;
+      return delta;
     } catch (err) {
       this.lastNullReason = 'no-eyes';
       console.warn('[landmarker] calibrateAt failed', err);
