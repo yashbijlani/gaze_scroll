@@ -44,6 +44,9 @@ export class ScrollController {
     this.lastDiscreteAt = 0;
     this.activeIntent = null;
     this.intentSince = null;
+    this.latest = null;
+    this.latestEdge = null;
+    this.reading = null; // { onText, textBelow, progressing, nearEnd } (M3)
     this.listeners = new Set();
     this.#bindManualOverride();
   }
@@ -57,6 +60,11 @@ export class ScrollController {
   setEnabled(on) {
     this.enabled = !!on;
     if (!this.enabled) this.velocity = 0; // emergency stop is instant
+  }
+
+  // DOM/reading snapshot from ReadingTracker (M3). Null = no DOM info.
+  setReading(reading) {
+    this.reading = reading ?? null;
   }
 
   onVelocity(cb) {
@@ -114,8 +122,24 @@ export class ScrollController {
       const v = Math.min(maxVel, depth * maxVel * gain);
       return dir * v * Math.max(0.25, r.confidence ?? 1);
     }
-    // smooth / reading / predictive share the ramped core here; M3 adds
-    // DOM gating on top for reading/predictive.
+    if (this.mode === ScrollModes.READING) {
+      // Genuine reading flow only: gaze on text AND progressing downward
+      // through it (or at the last lines). A downward glance at
+      // whitespace/chrome never scrolls here — the core anti-gimmick rule.
+      const rd = this.reading;
+      if (!rd || !rd.onText) return 0;
+      if (!rd.progressing && !rd.nearEnd) return 0;
+      return dir * maxVel * 0.6 * Math.max(0.3, r.confidence ?? 1);
+    }
+    if (this.mode === ScrollModes.PREDICTIVE) {
+      // Pre-reveal: start gently once readable content below runs thin,
+      // before the user hits the viewport edge.
+      const rd = this.reading;
+      if (!rd || !rd.onText) return 0;
+      if (!rd.revealSoon && !rd.nearEnd) return 0;
+      return dir * maxVel * 0.45 * Math.max(0.3, r.confidence ?? 1);
+    }
+    // smooth: intent-driven ramped core.
     return dir * maxVel * Math.max(0.25, r.confidence ?? 1);
   }
 
