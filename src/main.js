@@ -15,6 +15,7 @@ import { Overlay } from './overlay.js';
 import { CalibrationFlow } from './calibration.js';
 import { GazeLogger } from './logger.js';
 import { WebGazerProvider } from './gaze/provider.js';
+import { LandmarkerGazeProvider } from './gaze/landmarker.js';
 import { GazeEventDetector } from './gaze/events.js';
 import { IntentEngine } from './gaze/intent.js';
 import { ScrollController, ScrollModes } from './gaze/scroll.js';
@@ -35,6 +36,7 @@ const els = {
   btnCalibrate: $('btn-calibrate'),
   btnRecalibrate: $('btn-recalibrate'),
   btnRestart: $('btn-restart'),
+  selProvider: $('sel-provider'),
   chkVideo: $('chk-video'),
   chkCursor: $('chk-cursor'),
   btnDownload: $('btn-download'),
@@ -80,6 +82,27 @@ const calibration = new CalibrationFlow(tracker, CONFIG.calibration, els.calLaye
 const logger = new GazeLogger(CONFIG.logging);
 // Gaze → evidence → intent → action pipeline (ARCHITECTURE.md §3).
 const provider = new WebGazerProvider({ tracker, smoother });
+const activeVideo = () =>
+  overlay.findWebgazerVideo() ?? document.getElementById('gaze-preview-fallback');
+const landmarkerProvider = new LandmarkerGazeProvider({
+  tracker,
+  smoother,
+  faceDetector,
+  getVideo: activeVideo,
+});
+// Estimator choice (Controls select). Landmarker drives WebGazer's own
+// ridge regression with our working landmarks; classic uses WebGazer's
+// bundled detector loop. Read live at (re)start and calibration time.
+function getActiveProvider() {
+  return (CONFIG.gaze?.provider ?? 'landmarker') === 'webgazer' ? provider : landmarkerProvider;
+}
+function webgazerStoredCount() {
+  try {
+    return window.webgazer?.getRegression?.()?.[0]?.getData?.()?.length ?? null;
+  } catch {
+    return null;
+  }
+}
 const eventDetector = new GazeEventDetector(CONFIG, null);
 const intentEngine = new IntentEngine(
   { ...CONFIG.intent, edgeBandPx: CONFIG.events.edgeBandPx },
@@ -106,7 +129,8 @@ let trackingStartedAt = 0;
 let stallWarned = false;
 let enableInFlight = false;
 let wasVideoLive = false;
-let lastFaceT = 0; // last time a face was observed (either detector)
+let sampleUnsub = null; // handleSample subscription (cleared on restart/switch)
+let eventUnsub = null; // lab event-log subscription (same)let lastFaceT = 0; // last time a face was observed (either detector)
 let lastLandmarks = 0; // last time face landmarks were observed
 let lastFaceSource = null; // 'webgazer' | 'landmarker' | null
 let lastStandaloneDetect = 0;
@@ -413,9 +437,10 @@ async function onEnable() {
   setConsentError(null);
   els.btnEnable.textContent = 'Starting…';
   const START_TIMEOUT_MS = 45000;
+  const active = getActiveProvider();
   try {
     await Promise.race([
-      provider.start(),
+      active.start(),
       new Promise((_, reject) =>
         setTimeout(
           () =>
@@ -451,8 +476,25 @@ async function onEnable() {
   // fails below. The whole block is guarded so a preview/DOM failure can
   // never wedge the app on the consent gate (button stuck on "Starting…").
   try {
-    provider.subscribe(handleSample);
-    eventDetector.subscribe((evt) => lab.logEvent(evt));
+    // Restart/estimator-switch safe: never double-subscribe handleSample.
+    if (sampleUnsub) {
+      try {
+        sampleUnsub();
+      } catch {
+        /* ignore */
+      }
+      sampleUnsub = null;
+    }
+    sampleUnsub = active.subscribe(handleSample);
+    if (eventUnsub) {
+      try {
+        eventUnsub();
+      } catch {
+        /* ignore */
+      }
+      eventUnsub = null;
+    }
+    eventUnsub = eventDetector.subscribe((evt) => lab.logEvent(evt));
     overlay.dockCameraPreview(
       CONFIG.webgazer.videoViewerWidth,
       CONFIG.webgazer.videoViewerHeight,
@@ -509,6 +551,10 @@ async function onEnable() {
 async function onCalibrate() {
   els.btnCalibrate.disabled = true;
   lab.setPill('calibrating', 'calibrating');
+  // Live-error source matches the active estimator.
+  calibration.setPredictor(
+    getActiveProvider() === landmarkerProvider ? () => landmarkerProvider.predictOnce() : null,
+  );
   setStatus('Calibration running: look at each dot and click it.');
   const done = await calibration.start((d, n) => {
     els.calStatus.textContent = `Calibrated ${d}/${n}…`;
@@ -517,7 +563,8 @@ async function onCalibrate() {
   els.calStatus.textContent =
     `Calibration ${q?.label ?? 'done'}: ${done} points recorded ` +
     `(${tracker.calibratedCount} total this session)` +
-    (q?.meanErrPx != null ? `, mean error ~${q.meanErrPx}px.` : '.');
+    (q?.meanErrPx != null ? `, mean error ~${q.meanErrPx}px` : '') +
+    (q?.stored != null ? `, ${q.stored} eye samples in model.` : '.');
   setStatus('Calibration complete. Everyday clicks keep training the model implicitly.');
   els.btnCalibrate.disabled = false;
   lab.setPill('tracking', 'tracking');
@@ -544,6 +591,11 @@ async function onRestartCamera() {
     await provider.stop();
   } catch (err) {
     console.warn('camera stop during restart', err);
+  }
+  try {
+    await landmarkerProvider.stop();
+  } catch (err) {
+    console.warn('landmarker stop during restart', err);
   }
   trackingRunning = false;
   lastGazeT = 0;
@@ -600,6 +652,17 @@ function bindScrollControls() {
     els.selCalPoints.value = String(CONFIG.calibration.points ?? 9);
     els.selCalPoints.addEventListener('change', (e) => {
       CONFIG.calibration.points = Number(e.target.value);
+    });
+  }
+  if (els.selProvider) {
+    els.selProvider.value = CONFIG.gaze?.provider ?? 'landmarker';
+    els.selProvider.addEventListener('change', (e) => {
+      CONFIG.gaze.provider = e.target.value;
+      setStatus(
+        trackingRunning
+          ? `Estimator → ${e.target.value}. Takes effect on “Restart camera”.`
+          : `Estimator → ${e.target.value}.`,
+      );
     });
   }
   if (els.btnSkipCal) {
@@ -810,6 +873,7 @@ async function diagnoseStall(prefix) {
 
 function snapshotConfig() {
   return {
+    gaze: { ...CONFIG.gaze },
     intent: { ...CONFIG.intent },
     scroll: { ...CONFIG.scroll, mode: scrollController.mode },
     velocity: { ...CONFIG.velocity },
@@ -841,6 +905,7 @@ function buildDiagnostics() {
     webgazer,
     previewFallback: !!overlay.fallbackStream,
     face: { state: faceDetector.state, source: lastFaceSource },
+    estimator: CONFIG.gaze?.provider ?? 'landmarker',
     errors: errorLog.slice(-12),
     calibration: calibration.lastQuality,
     scroll: { mode: scrollController.mode, autoScroll, velocity: lastScrollVel },
@@ -884,6 +949,23 @@ function init() {
   }
   setControlsEnabled(false);
   calibration.setFaceCheck(() => faceDetected());
+  calibration.setRecorder(async (x, y) => {
+    // Landmarker: verified write through our own eye patches.
+    if (getActiveProvider() === landmarkerProvider) return landmarkerProvider.calibrateAt(x, y);
+    // Classic: legacy taps, then verify the store actually grew (it stays
+    // flat when WebGazer's own detector is blind — the fake-complete trap).
+    const before = webgazerStoredCount();
+    const taps = Math.max(1, CONFIG.calibration.samplesPerPoint ?? 5);
+    for (let i = 0; i < taps; i++) tracker.record(x, y);
+    const after = webgazerStoredCount();
+    if (before == null || after == null) return taps; // unknowable → trust
+    return Math.max(0, after - before);
+  });
+  calibration.setPredictor(null); // default: WebGazer's own prediction
+  calibration.setCounter(() => {
+    if (getActiveProvider() === landmarkerProvider) return landmarkerProvider.storedCount();
+    return webgazerStoredCount();
+  });
   els.btnEnable.addEventListener('click', onEnable);
   els.btnCalibrate.addEventListener('click', onCalibrate);
   els.btnRecalibrate.addEventListener('click', onResetCalibration);

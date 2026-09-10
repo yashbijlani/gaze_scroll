@@ -20,8 +20,7 @@ export const CONFIG = {
     faceMeshSolutionPath:
       'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619',
   },
-  face: {
-    // Standalone MediaPipe Tasks FaceLandmarker: independent of WebGazer's
+  face: {    // Standalone MediaPipe Tasks FaceLandmarker: independent of WebGazer's
     // bundled 2021 facemesh stack. Drives the eye overlay + face presence.
     // Pinned: tasks-vision 0.10.35 ships vision_bundle.mjs + wasm/.
     enabled: true,
@@ -95,5 +94,12 @@ export const CONFIG = {
     consoleLog: false,
     panelRows: 8,
     panelRefreshMs: 100,
+  },
+  gaze: {
+    // Gaze estimator. 'landmarker' drives WebGazer's ridge regression with
+    // eye patches cut from our own working landmarks (see gaze/landmarker.js);
+    // 'webgazer' uses WebGazer's bundled detector loop (needs its model
+    // files healthy). Switch takes effect on (re)start.
+    provider: 'landmarker',
   },
 };

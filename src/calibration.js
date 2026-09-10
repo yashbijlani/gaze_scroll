@@ -30,6 +30,28 @@ export class CalibrationFlow {
     return this;
   }
 
+  // Async record hook: (x, y) => taps stored (0 = nothing recorded → the
+  // point repeats instead of advancing). Defaults to the legacy
+  // tracker.record fire-and-forget path.
+  setRecorder(fn) {
+    this.recorder = fn;
+    return this;
+  }
+
+  // Async live-prediction hook for the quality score. Defaults to
+  // WebGazer's getCurrentPrediction.
+  setPredictor(fn) {
+    this.predictor = fn;
+    return this;
+  }
+
+  // () => total eye samples in the model (or null when unknowable), shown
+  // in the summary so "calibrated" is always backed by a number.
+  setCounter(fn) {
+    this.counter = fn;
+    return this;
+  }
+
   positions() {
     const m = this.cfg.gridMargin ?? 0.1;
     const xs = [m, 0.5, 1 - m].map((f) => Math.round(f * window.innerWidth));
@@ -61,22 +83,35 @@ export class CalibrationFlow {
     const errors = [];
     this.layer.hidden = false;
     let done = 0;
-    for (const [x, y] of pts) {
+    let i = 0;
+    while (i < pts.length) {
+      if (this.skipped) break;
+      const [x, y] = pts[i];
+      // eslint-disable-next-line no-await-in-loop
+      await this.#present(x, y, i + 1, pts.length);
       if (this.skipped) break;
       // eslint-disable-next-line no-await-in-loop
-      await this.#present(x, y, done + 1, pts.length);
-      if (this.skipped) break;
+      const stored = await this.#recordPoint(x, y);
+      if (stored <= 0) {
+        // Nothing reached the model (no usable eye data at click time):
+        // repeat the SAME point with an explanation instead of advancing.
+        // eslint-disable-next-line no-await-in-loop
+        this.#note('Point not recorded — no usable eye data. Keep looking at the dot and click again.');
+        continue;
+      }
+      i += 1;
       done += 1;
-      // Repeated taps: WebGazer's ridge regression benefits from several
-      // labelled samples per target, not one.
-      const taps = Math.max(1, this.cfg.samplesPerPoint ?? 5);
-      for (let i = 0; i < taps; i++) this.tracker.record(x, y);
       // eslint-disable-next-line no-await-in-loop
       const errPx = await this.#liveError(x, y);
       if (errPx != null) errors.push(errPx);
       if (onProgress) onProgress(done, pts.length);
     }
     const quality = this.#score(errors, done, pts.length);
+    try {
+      quality.stored = this.counter ? this.counter() : null;
+    } catch {
+      quality.stored = null;
+    }
     this.lastQuality = quality;
     this.#save(quality);
     await this.#summary(quality); // eslint-disable-line no-await-in-loop
@@ -167,16 +202,48 @@ export class CalibrationFlow {
   // One live prediction vs target; null when predictions aren't available.
   async #liveError(x, y) {
     try {
-      const wg = window.webgazer;
-      if (!wg || typeof wg.getCurrentPrediction !== 'function') return null;
       const pred = await Promise.race([
-        Promise.resolve(wg.getCurrentPrediction()),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+        this.predictor ? Promise.resolve(this.predictor()) : this.#webgazerPrediction(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
       ]);
       if (!pred || !Number.isFinite(pred.x) || !Number.isFinite(pred.y)) return null;
       return Math.hypot(pred.x - x, pred.y - y);
     } catch {
       return null;
+    }
+  }
+
+  async #webgazerPrediction() {
+    const wg = window.webgazer;
+    if (!wg || typeof wg.getCurrentPrediction !== 'function') return null;
+    return wg.getCurrentPrediction();
+  }
+
+  async #recordPoint(x, y) {
+    try {
+      if (this.recorder) return (await this.recorder(x, y)) ?? 0;
+      // Legacy path: repeated taps through the tracker (fire-and-forget).
+      const taps = Math.max(1, this.cfg.samplesPerPoint ?? 5);
+      for (let i = 0; i < taps; i++) this.tracker.record(x, y);
+      return taps;
+    } catch {
+      return 0;
+    }
+  }
+
+  // Transient note inside the calibration layer (reused warn slot).
+  #note(text) {
+    try {
+      let el = this.layer.querySelector('.cal-face-warn');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'cal-face-warn';
+        this.layer.appendChild(el);
+      }
+      el.textContent = text;
+      el.hidden = false;
+    } catch {
+      /* best effort */
     }
   }
 
@@ -198,6 +265,12 @@ export class CalibrationFlow {
         quality.meanErrPx == null
           ? 'No live predictions were available to score against.'
           : `Mean error ≈ ${quality.meanErrPx}px.`;
+      const stored =
+        quality.stored == null
+          ? ''
+          : quality.stored > 0
+            ? ` ${quality.stored} eye samples stored in the model.`
+            : ` WARNING: 0 eye samples reached the model — gaze will not work until points record successfully.`;
       const advice =
         quality.label === 'poor'
           ? 'Try better lighting, sit still, and recalibrate.'
@@ -206,7 +279,7 @@ export class CalibrationFlow {
             : 'Looks good.';
       this.layer.innerHTML =
         `<div class="cal-card"><h2>Calibration ${quality.label}</h2>` +
-        `<p>${detail} ${advice}</p>` +
+        `<p>${detail}${stored} ${advice}</p>` +
         `<div class="btn-row"><button data-cal-done>Done</button></div></div>`;
       const done = () => resolve();
       this.layer.querySelector('[data-cal-done]').addEventListener('click', done, { once: true });

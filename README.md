@@ -84,6 +84,7 @@ src/calibration.js  guided N-point flow + quality score
 src/logger.js       sample ring buffer + CSV export
 src/lab.js          Gaze Lab panel controller
 src/gaze/provider.js   GazeProvider / WebGazerProvider / MockProvider
+src/gaze/landmarker.js   LandmarkerGazeProvider (default gaze estimator)
 src/gaze/velocity.js   EMA velocity + direction persistence
 src/gaze/events.js     fixation/movement/edge-dwell/tracking-loss events
 src/gaze/intent.js     evidence-weighted intent + hysteresis
