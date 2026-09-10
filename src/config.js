@@ -36,6 +36,48 @@ export const CONFIG = {
   calibration: {
     points: 9, // 9 (3x3 grid) or 5 (corners + center)
     gridMargin: 0.1, // fraction of viewport inset from edges
+    samplesPerPoint: 5, // repeated recordScreenPosition taps per point
+    qualityThresholdPx: 160, // predicted-vs-target spread flagging poor cal
+    persistKey: 'gazeScroll.calibration.v1',
+  },
+  velocity: {
+    // EMA smoothing for the velocity signal itself (0..1, higher = smoother).
+    emaAlpha: 0.35,
+    // Above this speed the sample counts as saccade-like movement.
+    saccadeThresholdPxPerS: 450,
+    // Below this speed (sustained) the gaze counts as stable/reading.
+    stableThresholdPxPerS: 120,
+    minDtMs: 8,
+    maxDtMs: 250,
+  },
+  events: {
+    trackingLostGapMs: 800, // no-sample gap declaring TRACKING_LOST
+    edgeBandPx: 140, // distance from viewport edge defining edge zone
+    edgeDwellMs: 900, // sustained edge presence before EDGE_DWELL_STARTED
+    movementMinDurationMs: 150,
+  },
+  intent: {
+    // Evidence weights for the LOOKING_DOWN/UP hypotheses (sum ≈ 1).
+    wEdge: 0.3,
+    wVelocity: 0.3,
+    wPersistence: 0.2,
+    wFixation: 0.1,
+    wConfidence: 0.1,
+    enterThreshold: 0.62, // score needed to ENTER a directional intent
+    exitThreshold: 0.42, // score below which we LEAVE it (hysteresis band)
+    minActivationMs: 700, // evidence must persist this long before acting
+    minConfidence: 0.35, // below this → UNCERTAIN/TRACKING_LOST, never scroll
+  },
+  scroll: {
+    mode: 'smooth', // 'discrete' | 'smooth' | 'edge' | 'reading' | 'predictive' | 'off'
+    maxVelocityPxPerS: 900,
+    minActivationMs: 700,
+    discreteChunkPx: 320, // ~one reading chunk per discrete step
+    discreteCooldownMs: 1200,
+    edgeProportionalGain: 2.2, // edge mode: vel = depth01 * maxVel * gain (clamped)
+    accelPxPerS2: 2600, // smooth ramp up/down
+    manualOverridePauseMs: 2500, // wheel/key/touch suppresses auto-scroll
+    requireFixationForEdge: false,
   },
   logging: {
     bufferSize: 600,
