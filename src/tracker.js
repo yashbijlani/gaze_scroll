@@ -155,6 +155,34 @@ export class GazeTracker {
     }
   }
 
+  // Attach a one-shot onended hook to the camera tracks so a silent
+  // browser/OS-initiated track death is reported immediately instead of
+  // discovered minutes later via missing samples. Idempotent.
+  hookTrackEnd(cb) {
+    try {
+      const video = this.getVideoElement();
+      const tracks = video?.srcObject?.getVideoTracks?.() ?? [];
+      for (const t of tracks) {
+        if (t.__gazeHooked) continue;
+        t.__gazeHooked = true;
+        const prev = t.onended;
+        t.onended = (e) => {
+          try {
+            if (typeof prev === 'function') prev.call(t, e);
+          } catch {
+            /* ignore */
+          }
+          try {
+            cb(t);
+          } catch {
+            /* ignore */
+          }
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   // Liveness of the actual camera path (element + MediaStreamTracks).
   videoState() {
     const video = this.getVideoElement();

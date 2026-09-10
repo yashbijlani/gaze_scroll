@@ -38,6 +38,7 @@ const els = {
   chkCursor: $('chk-cursor'),
   btnDownload: $('btn-download'),
   btnClearLog: $('btn-clear-log'),
+  btnDiag: $('btn-diag'),
   logBody: $('log-body'),
   logCount: $('log-count'),
   cursor: $('gaze-cursor'),
@@ -62,7 +63,17 @@ const els = {
 };
 
 const tracker = new GazeTracker(CONFIG.webgazer);
-const smoother = new GazeSmoother(CONFIG.smoothing);
+// Window-level error capture: console filters hide warnings/info, and some
+// failures surface only here. Kept to the last 12, shipped with diagnostics.
+const errorLog = [];
+function captureError(kind, message) {
+  errorLog.push({ t: new Date().toISOString(), kind, message: String(message).slice(0, 500) });
+  if (errorLog.length > 12) errorLog.shift();
+}
+window.addEventListener('error', (e) => captureError('error', e.message || e.error?.message || e.error));
+window.addEventListener('unhandledrejection', (e) =>
+  captureError('unhandledrejection', e.reason?.message ?? e.reason),
+);const smoother = new GazeSmoother(CONFIG.smoothing);
 const overlay = new Overlay({ cursorEl: els.cursor });
 const calibration = new CalibrationFlow(tracker, CONFIG.calibration, els.calLayer);
 const logger = new GazeLogger(CONFIG.logging);
@@ -92,6 +103,7 @@ let trackingRunning = false;
 let trackingStartedAt = 0;
 let stallWarned = false;
 let enableInFlight = false;
+let wasVideoLive = false;
 // Latest pipeline snapshot for the lab (written per sample, read at 10Hz).
 let latestSnapshot = null;
 let lastDomFullT = 0;
@@ -364,6 +376,16 @@ async function onEnable() {
       CONFIG.webgazer.videoViewerWidth,
       CONFIG.webgazer.videoViewerHeight,
     );
+    // If WebGazer produced no video element, open our own preview-only
+    // stream so the user can always see the camera (diagnostic + trust).
+    const preview = await overlay.ensurePreview(
+      CONFIG.webgazer.videoViewerWidth,
+      CONFIG.webgazer.videoViewerHeight,
+    );
+    console.info('[gaze] preview', preview);
+    if (!preview.ok) {
+      console.warn('[gaze] no camera preview available', preview.error);
+    }
   } catch (err) {
     console.warn('post-start UI setup issue (tracking continues)', err);
   }
@@ -451,6 +473,7 @@ async function onRestartCamera() {
   smoother.reset();
   lab.clearTrail();
   overlay.hideGaze();
+  overlay.releaseFallbackPreview();
   await onEnable();
 }
 
@@ -712,6 +735,61 @@ function snapshotConfig() {
   };
 }
 
+function buildDiagnostics() {
+  let webgazer = null;
+  try {
+    webgazer = tracker.diagnose();
+  } catch (err) {
+    webgazer = { error: String(err?.message ?? err) };
+  }
+  return {
+    when: new Date().toISOString(),
+    page: window.location.href,
+    userAgent: navigator.userAgent,
+    secureContext: window.isSecureContext,
+    tracking: {
+      trackingRunning,
+      replaying,
+      samples: logger.count,
+      dropped: logger.dropped,
+      lastSampleAgeMs: lastGazeT ? Math.round(performance.now() - lastGazeT) : null,
+      wasVideoLive,
+    },
+    webgazer,
+    previewFallback: !!overlay.fallbackStream,
+    errors: errorLog.slice(-12),
+    calibration: calibration.lastQuality,
+    scroll: { mode: scrollController.mode, autoScroll, velocity: lastScrollVel },
+    config: snapshotConfig(),
+  };
+}
+
+async function copyDiagnostics() {
+  const text = JSON.stringify(buildDiagnostics(), null, 2);
+  console.info('[gaze] diagnostics', text);
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('Diagnostics copied to clipboard — paste it back here.');
+  } catch {
+    // Clipboard API needs focus/permission; fall back to a selectable box.
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '8px';
+      ta.style.left = '8px';
+      ta.style.zIndex = '3000';
+      ta.rows = 12;
+      ta.cols = 60;
+      document.body.appendChild(ta);
+      ta.select();
+      setStatus('Clipboard blocked — diagnostics are in the text box at top-left; copy them manually.');
+    } catch (err) {
+      setStatus(`Could not copy diagnostics: ${err.message}. It is also in the console.`);
+    }
+  }
+}
+
 function init() {
   if (window.isSecureContext === false) {
     setStatus(
@@ -735,6 +813,7 @@ function init() {
     logger.clear();
     renderLogPanel();
   });
+  if (els.btnDiag) els.btnDiag.addEventListener('click', copyDiagnostics);
   bindScrollControls();
   bindLabControls();
   startScrollLoop();
@@ -757,6 +836,24 @@ function init() {
       `${samplesThisSecond} samples/s · calibration points: ${tracker.calibratedCount}`;
     samplesThisSecond = 0;
     if (!trackingRunning) return;
+    // Track-death tripwire: hook onended once, plus a live→dead poll for
+    // browsers that end tracks without firing the event.
+    try {
+      tracker.hookTrackEnd(() => {
+        if (!stallWarned) {
+          stallWarned = true;
+          diagnoseStall('The camera track ended mid-session.');
+        }
+      });
+      const live = !!tracker.videoState().live;
+      if (wasVideoLive && !live && !stallWarned) {
+        stallWarned = true;
+        diagnoseStall('The camera went dark mid-session.');
+      }
+      wasVideoLive = live;
+    } catch (err) {
+      console.warn('video liveness check skipped', err);
+    }
     const now = performance.now();
     const flowing = lastGazeT !== 0 && now - lastGazeT < 3000;
     if (flowing) {
