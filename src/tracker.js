@@ -131,6 +131,91 @@ export class GazeTracker {
     this.started = false;
   }
 
+  // --- Diagnostics: distinguish "camera track died" from "model dead". ---
+
+  videoElementId() {
+    try {
+      return window.webgazer?.params?.videoElementId ?? 'webgazerVideoFeed';
+    } catch {
+      return 'webgazerVideoFeed';
+    }
+  }
+
+  getVideoElement() {
+    try {
+      const byId = document.getElementById(this.videoElementId());
+      if (byId) return byId;
+      const inContainer = document.querySelector('#webgazerVideoContainer video');
+      if (inContainer) return inContainer;
+      // Last resort: any video element carrying a live camera stream.
+      const videos = [...document.querySelectorAll('video')];
+      return videos.find((v) => v.srcObject) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Liveness of the actual camera path (element + MediaStreamTracks).
+  videoState() {
+    const video = this.getVideoElement();
+    if (!video) return { found: false };
+    let tracks = [];
+    try {
+      tracks = video.srcObject?.getVideoTracks?.() ?? [];
+    } catch {
+      tracks = [];
+    }
+    return {
+      found: true,
+      readyState: video.readyState,
+      videoSize: [video.videoWidth, video.videoHeight],
+      paused: video.paused,
+      ended: video.ended,
+      tracks: tracks.map((t) => ({ readyState: t.readyState, muted: t.muted })),
+      live: tracks.some((t) => t.readyState === 'live'),
+    };
+  }
+
+  // One live prediction outside the rAF loop, capturing the REAL detector
+  // error (404/403 model URLs, no-face nulls) instead of guessing.
+  async probePrediction(timeoutMs = 10000) {
+    try {
+      const wg = window.webgazer;
+      if (!wg || typeof wg.getCurrentPrediction !== 'function') {
+        return { ok: false, error: 'getCurrentPrediction() missing in this build' };
+      }
+      const pred = await Promise.race([
+        Promise.resolve(wg.getCurrentPrediction()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('prediction timeout')), timeoutMs)),
+      ]);
+      if (!pred || !Number.isFinite(pred.x)) {
+        return { ok: false, error: 'prediction null (model not ready or no face in frame)' };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err?.message ?? err) };
+    }
+  }
+
+  diagnose() {
+    let keys = [];
+    let paramInfo = null;
+    try {
+      const wg = window.webgazer;
+      keys = wg ? Object.keys(wg).sort() : [];
+      if (wg?.params) {
+        paramInfo = {
+          faceMeshSolutionPath: wg.params.faceMeshSolutionPath ?? null,
+          videoElementId: wg.params.videoElementId ?? null,
+          videoContainerId: wg.params.videoContainerId ?? null,
+        };
+      }
+    } catch (err) {
+      paramInfo = { error: String(err?.message ?? err) };
+    }
+    return { keys, params: paramInfo, video: this.videoState() };
+  }
+
   // Heuristic 0–1 score: face features present + distance from viewport edge.
   // NOT a model confidence — a placeholder until the estimator provides one.
   computeConfidence(sample) {

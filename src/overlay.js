@@ -6,23 +6,38 @@ export class Overlay {
     this.videoVisible = true;
   }
 
-  // Cosmetic only: must never throw. WebGazer's setVideoViewerSize
-  // dereferences its internal video/overlay elements without null checks,
-  // so on builds where begin() resolves before that DOM exists it throws
-  // `Cannot read properties of null (reading 'style')`. Catch and continue
-  // without a preview — tracking works fine without it.
+  // Cosmetic only: must never throw. Finds WebGazer's own <video>
+  // element directly and makes it visible + playing, instead of trusting
+  // WebGazer's setVideoViewerSize — on some builds that touches internal
+  // refs that are still null and throws `... reading 'style'`.
   dockCameraPreview(width, height) {
     try {
-      const w = window.webgazer;
-      if (w && typeof w.setVideoViewerSize === 'function') {
-        w.setVideoViewerSize(width, height);
+      const video =
+        document.getElementById(window.webgazer?.params?.videoElementId ?? 'webgazerVideoFeed') ??
+        document.querySelector('#webgazerVideoContainer video') ??
+        [...document.querySelectorAll('video')].find((v) => v.srcObject) ??
+        null;
+      if (video) {
+        video.muted = true;
+        try {
+          const p = video.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch {
+          /* autoplay needs a gesture; the enable click usually covers it */
+        }
+        video.style.display = 'block';
+        video.style.opacity = '1';
+        video.style.width = `${width}px`;
+        video.style.height = `${height}px`;
+      } else {
+        console.warn('camera preview: no video element found yet');
       }
-    } catch (err) {
-      console.warn('camera preview sizing skipped', err);
-    }
-    try {
-      const c = document.getElementById('webgazerVideoContainer');
+      const c = document.getElementById(
+        window.webgazer?.params?.videoContainerId ?? 'webgazerVideoContainer',
+      );
       if (c && c.style) {
+        c.style.display = 'block';
+        c.style.opacity = '1';
         c.style.position = 'fixed';
         c.style.top = '64px';
         c.style.right = '12px';

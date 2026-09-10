@@ -33,6 +33,7 @@ const els = {
   consentError: $('consent-error'),
   btnCalibrate: $('btn-calibrate'),
   btnRecalibrate: $('btn-recalibrate'),
+  btnRestart: $('btn-restart'),
   chkVideo: $('chk-video'),
   chkCursor: $('chk-cursor'),
   btnDownload: $('btn-download'),
@@ -119,6 +120,7 @@ function setControlsEnabled(running) {
   els.btnRecalibrate.disabled = !running;
   els.btnDownload.disabled = !running;
   els.btnClearLog.disabled = !running;
+  if (els.btnRestart) els.btnRestart.disabled = !running;
   if (els.btnSkipCal) els.btnSkipCal.disabled = !running;
 }
 
@@ -369,7 +371,36 @@ async function onEnable() {
   els.btnEnable.textContent = 'Enable camera & tracking';
   setControlsEnabled(true);
   lab.setPill('tracking', 'tracking');
-  setStatus('Tracking running. Click “Calibrate” for better accuracy.');
+  // Report what actually came up: video element + stream liveness now, and
+  // one probed prediction to capture the real detector error (if any) while
+  // the user can still read it — not minutes later when the loop dies.
+  try {
+    const diag = tracker.diagnose();
+    console.info('[gaze] startup diagnostics', diag);
+    const v = diag.video;
+    if (!v.found) {
+      setStatus('Tracking started, but no camera <video> element found — predictions may still flow; check the Lab.');
+    } else if (!v.live) {
+      setStatus('Tracking started, but the camera track is not live yet — waiting for first frames…');
+    } else {
+      const [vw, vh] = v.videoSize;
+      setStatus(
+        `Tracking running (${vw || '?'}×${vh || '?'} video). Click “Calibrate” for better accuracy.`,
+      );
+    }
+    tracker.probePrediction().then((probe) => {
+      console.info('[gaze] prediction probe', probe);
+      if (!probe.ok) {
+        setStatus(
+          `Camera is live but the face model isn't predicting yet: ${probe.error}. ` +
+            `Face the camera in good light; if this persists, check console for MediaPipe 404s.`,
+        );
+      }
+    });
+  } catch (err) {
+    console.warn('startup diagnostics skipped', err);
+    setStatus('Tracking running. Click “Calibrate” for better accuracy.');
+  }
 }
 
 async function onCalibrate() {
@@ -398,6 +429,29 @@ async function onResetCalibration() {
   lab.clearTrail();
   els.calStatus.textContent = 'Not calibrated.';
   setStatus('Calibration data cleared. Run “Calibrate” to retrain.');
+}
+
+// Tear down the camera + pipeline without reloading the page, then run the
+// normal enable flow again (consent already granted, so no second prompt).
+async function onRestartCamera() {
+  if (enableInFlight) return;
+  setStatus('Restarting camera…');
+  stallWarned = false;
+  try {
+    await provider.stop();
+  } catch (err) {
+    console.warn('camera stop during restart', err);
+  }
+  trackingRunning = false;
+  lastGazeT = 0;
+  latestSnapshot = null;
+  eventDetector.reset();
+  intentEngine.reset();
+  readingTracker.reset();
+  smoother.reset();
+  lab.clearTrail();
+  overlay.hideGaze();
+  await onEnable();
 }
 
 // --- Scroll controls: mode, enable, e-stop, sensitivity. ---
@@ -608,6 +662,46 @@ function bindLabControls() {
   }
 }
 
+// Stall triage: tell "camera track died" apart from "model dead", because
+// the fixes differ (restart camera vs unblock model files / show face).
+async function diagnoseStall(prefix) {
+  let video = null;
+  try {
+    video = tracker.videoState();
+  } catch {
+    video = null;
+  }
+  if (video && video.found && !video.live) {
+    setStatus(
+      `${prefix} The camera track itself ended (OS/browser/another tab took it). ` +
+        `Press “Restart camera” in Controls.`,
+    );
+    lab.setPill('lost', 'camera stopped');
+    return;
+  }
+  setStatus(`${prefix} Checking the face model… (see console for details)`);
+  try {
+    const probe = await tracker.probePrediction();
+    console.info('[gaze] stall probe', probe, video);
+    if (!probe.ok) {
+      setStatus(
+        `${prefix} Camera looks live but the detector says: ${probe.error}. ` +
+          `Face the camera in good light; if it persists, check console for MediaPipe 404s/adblock, ` +
+          `or press “Restart camera”.`,
+      );
+    } else {
+      setStatus(
+        `${prefix} The detector answers when asked, so the prediction loop likely died on a ` +
+          `transient error — press “Restart camera”.`,
+      );
+    }
+  } catch (err) {
+    console.warn('stall probe failed', err);
+    setStatus(`${prefix} Press “Restart camera”. (Probe error in console.)`);
+  }
+  lab.setPill('lost', 'tracking stalled');
+}
+
 function snapshotConfig() {
   return {
     intent: { ...CONFIG.intent },
@@ -630,6 +724,7 @@ function init() {
   els.btnEnable.addEventListener('click', onEnable);
   els.btnCalibrate.addEventListener('click', onCalibrate);
   els.btnRecalibrate.addEventListener('click', onResetCalibration);
+  if (els.btnRestart) els.btnRestart.addEventListener('click', onRestartCamera);
   els.chkVideo.addEventListener('change', (e) => overlay.setVideoVisible(e.target.checked));
   els.chkCursor.addEventListener('change', (e) => {
     showCursor = e.target.checked;
@@ -671,17 +766,10 @@ function init() {
     if (stallWarned) return;
     if (lastGazeT === 0 && now - trackingStartedAt > 8000) {
       stallWarned = true;
-      setStatus(
-        'Camera is on but no gaze samples yet — the face model may still be ' +
-          'loading, or model files were blocked (check console for 404s / ' +
-          'adblock / CSP).',
-      );
+      diagnoseStall('Camera is on but no gaze samples yet.');
     } else if (lastGazeT !== 0 && now - lastGazeT > 3000) {
       stallWarned = true;
-      setStatus(
-        'Tracking stalled: camera is on but samples stopped. Reload and ' +
-          'check the console for MediaPipe errors; disable adblock for this site.',
-      );
+      diagnoseStall('Tracking stalled: camera was producing samples, then stopped.');
     }
   }, 1000);
   setStatus('Idle. Click “Enable camera & tracking” to begin.');
