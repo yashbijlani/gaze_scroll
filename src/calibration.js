@@ -93,6 +93,7 @@ export class CalibrationFlow {
       if (this.skipped) break;
       // eslint-disable-next-line no-await-in-loop
       const stored = await this.#recordPoint(x, y);
+      console.info('[cal] record result', { point: `${i + 1}/${pts.length}`, stored, detail: this.lastDetail });
       if (stored <= 0) {
         // Nothing reached the model (no usable eye data at click time):
         // repeat the SAME point with an explanation instead of advancing.
@@ -188,10 +189,12 @@ export class CalibrationFlow {
         (e) => {
           e.stopPropagation();
           if (this.faceCheck && !this.faceCheck()) {
+            console.info('[cal] click rejected by face gate (no recent face)');
             if (warn) warn.hidden = false;
             target.focus();
             return; // stay on this point until a face is visible
           }
+          console.info('[cal] click accepted, recording point', `${i}/${n}`);
           resolve();
         },
       );

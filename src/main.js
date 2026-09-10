@@ -1108,3 +1108,24 @@ init();
 // Test seam: lets the smoke test execute the real module init + pipeline
 // without a browser. Emitted samples drive the full handler path.
 export const __testHooks = { handleSample };
+
+// Debug handle: live state for console triage (no DOM digging needed).
+// e.g. __gaze.faceDetector.state, __gaze.calibration.running,
+// __gaze.landmarkerProvider.lastNullReason, __gaze.faceDetected()
+try {
+  window.__gaze = {
+    CONFIG,
+    calibration,
+    faceDetector,
+    landmarkerProvider,
+    tracker,
+    eventDetector,
+    intentEngine,
+    getActiveProvider,
+    webgazerStoredCount,
+    faceDetected,
+    buildDiagnostics,
+  };
+} catch {
+  /* non-browser (tests) — skip */
+}
