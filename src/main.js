@@ -119,7 +119,8 @@ let replaying = false;
 let autoScroll = false;
 
 let showCursor = true;
-let lastGazeT = 0;
+let lastGazeT = 0; // last VALID (positioned) sample
+let lastAnySampleT = 0; // last sample of any kind (loop liveness)
 let samplesThisSecond = 0;
 let lastPanelRender = 0;
 let lastLabRender = 0;
@@ -177,6 +178,7 @@ function setControlsEnabled(running) {
 function handleSample(sample) {
   samplesThisSecond += 1;
   const t = sample?.timestamp ?? performance.now();
+  lastAnySampleT = t;
   if (sample && sample.x != null) lastGazeT = t;
   if (sample?.hasFace) lastFaceT = t;
 
@@ -584,15 +586,30 @@ async function onEnable() {
       }
       setStatus(`Tracking running (${vw || '?'}×${vh || '?'} video).${restNote}`);
     }
-    tracker.probePrediction().then((probe) => {
-      console.info('[gaze] prediction probe', probe);
-      if (!probe.ok) {
-        setStatus(
-          `Camera is live but the face model isn't predicting yet: ${probe.error}. ` +
-            `Face the camera in good light; if this persists, check console for MediaPipe 404s.`,
-        );
-      }
-    });
+    if (active === landmarkerProvider) {
+      // Probe our own loop, not WebGazer's (its probe is meaningless here).
+      // Null with an empty model is expected pre-calibration — not an error.
+      landmarkerProvider.predictOnce().then((p) => {
+        console.info('[gaze] prediction probe', p ? 'ok' : landmarkerProvider.lastNullReason);
+        if (!p && landmarkerProvider.storedCount() > 0) {
+          setStatus(
+            `Camera live and calibrated, but no gaze right now ` +
+              `(${landmarkerProvider.lastNullReason ?? 'unknown'}). Face the camera; ` +
+              `brief dropouts coast on the last position.`,
+          );
+        }
+      });
+    } else {
+      tracker.probePrediction().then((probe) => {
+        console.info('[gaze] prediction probe', probe);
+        if (!probe.ok) {
+          setStatus(
+            `Camera is live but the face model isn't predicting yet: ${probe.error}. ` +
+              `Face the camera in good light; if this persists, check console for MediaPipe 404s.`,
+          );
+        }
+      });
+    }
   } catch (err) {
     console.warn('startup diagnostics skipped', err);
     setStatus('Tracking running. Click “Calibrate” for better accuracy.');
@@ -606,9 +623,16 @@ async function onCalibrate() {
   calibration.setPredictor(
     getActiveProvider() === landmarkerProvider ? () => landmarkerProvider.predictOnce() : null,
   );
-  // Fresh mapping: a new run replaces the old one (appending across head
-  // shifts poisons the model). Persisted copy is rewritten at the end.
-  if (getActiveProvider() === landmarkerProvider) landmarkerProvider.reset();
+  // Append semantics: runs accumulate (head features + outlier drop keep
+  // old data useful); Reset is the only wipe. Pause auto-scroll while the
+  // layer is open — staring at edge dots must not scroll the page out
+  // from under the targets.
+  const wasAuto = autoScroll;
+  if (wasAuto) {
+    autoScroll = false;
+    scrollController.setEnabled(false);
+    if (els.chkAutoscroll) els.chkAutoscroll.checked = false;
+  }
   setStatus('Calibration running: look at each dot and click it.');
   const done = await calibration.start((d, n) => {
     els.calStatus.textContent = `Calibrated ${d}/${n}…`;
@@ -626,6 +650,11 @@ async function onCalibrate() {
     persistNote;
   setStatus('Calibration complete. Everyday clicks keep training the model implicitly.');
   els.btnCalibrate.disabled = false;
+  if (wasAuto) {
+    autoScroll = true;
+    scrollController.setEnabled(true);
+    if (els.chkAutoscroll) els.chkAutoscroll.checked = true;
+  }
   lab.setPill('tracking', 'tracking');
 }
 
@@ -659,6 +688,7 @@ async function onRestartCamera() {
   }
   trackingRunning = false;
   lastGazeT = 0;
+  lastAnySampleT = 0;
   lastValidGaze = null;
   latestSnapshot = null;
   eventDetector.reset();
@@ -916,7 +946,16 @@ async function diagnoseStall(prefix) {
   }
   setStatus(`${prefix} Checking the face model… (see console for details)`);
   try {
-    const probe = await tracker.probePrediction();
+    // Probe the ACTIVE estimator: the WebGazer probe is meaningless when
+    // the landmarker drives (its null-canvas error confused users before).
+    const probe =
+      getActiveProvider() === landmarkerProvider
+        ? await landmarkerProvider
+            .predictOnce()
+            .then((p) =>
+              p ? { ok: true } : { ok: false, error: landmarkerProvider.lastNullReason ?? 'unknown' },
+            )
+        : await tracker.probePrediction();
     console.info('[gaze] stall probe', probe, video);
     if (!probe.ok) {
       setStatus(
@@ -1128,16 +1167,19 @@ function init() {
       console.warn('video liveness check skipped', err);
     }
     const now = performance.now();
-    const flowing = lastGazeT !== 0 && now - lastGazeT < 3000;
+    // Any samples at all (even face-present nulls during flicker) mean the
+    // loop is alive — only total silence is a stall. lastGazeT tracks valid
+    // predictions; lastAnySampleT tracks loop liveness.
+    const flowing = lastAnySampleT !== 0 && now - lastAnySampleT < 3000;
     if (flowing) {
       stallWarned = false;
       return;
     }
     if (stallWarned) return;
-    if (lastGazeT === 0 && now - trackingStartedAt > 8000) {
+    if (lastAnySampleT === 0 && now - trackingStartedAt > 8000) {
       stallWarned = true;
       diagnoseStall('Camera is on but no gaze samples yet.');
-    } else if (lastGazeT !== 0 && now - lastGazeT > 3000) {
+    } else if (lastAnySampleT !== 0 && now - lastAnySampleT > 3000) {
       stallWarned = true;
       diagnoseStall('Tracking stalled: camera was producing samples, then stopped.');
     }

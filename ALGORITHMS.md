@@ -63,6 +63,11 @@ canvas). So the regression is now ours as well:
   click-point) samples WebGazer-style — you look where you click, so
   everyday use keeps training. UI chrome/calibration/replay clicks
   excluded. Same 2000-sample cap, retrains lazily.
+- Calibration runs append (Reset is the only wipe); auto-scroll pauses
+  while the layer is open so edge dots don't scroll the page mid-run.
+- Stall detection keys on loop liveness (any samples), not valid
+  predictions — detector flicker with face-present nulls is normal and
+  coasts on the holdover cursor instead of alarming.
 
 Selectable via Controls → Estimator (`landmarker` default, `webgazer`
 classic for builds whose bundle is healthy). Both emit the identical
