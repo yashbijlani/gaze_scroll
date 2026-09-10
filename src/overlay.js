@@ -6,17 +6,32 @@ export class Overlay {
     this.videoVisible = true;
   }
 
+  // Cosmetic only: must never throw. WebGazer's setVideoViewerSize
+  // dereferences its internal video/overlay elements without null checks,
+  // so on builds where begin() resolves before that DOM exists it throws
+  // `Cannot read properties of null (reading 'style')`. Catch and continue
+  // without a preview — tracking works fine without it.
   dockCameraPreview(width, height) {
-    const w = window.webgazer;
-    if (w) w.setVideoViewerSize(width, height);
-    const c = document.getElementById('webgazerVideoContainer');
-    if (c) {
-      c.style.position = 'fixed';
-      c.style.top = '64px';
-      c.style.right = '12px';
-      c.style.left = 'auto';
-      c.style.bottom = 'auto';
-      c.style.zIndex = '1200';
+    try {
+      const w = window.webgazer;
+      if (w && typeof w.setVideoViewerSize === 'function') {
+        w.setVideoViewerSize(width, height);
+      }
+    } catch (err) {
+      console.warn('camera preview sizing skipped', err);
+    }
+    try {
+      const c = document.getElementById('webgazerVideoContainer');
+      if (c && c.style) {
+        c.style.position = 'fixed';
+        c.style.top = '64px';
+        c.style.right = '12px';
+        c.style.left = 'auto';
+        c.style.bottom = 'auto';
+        c.style.zIndex = '1200';
+      }
+    } catch (err) {
+      console.warn('camera preview docking skipped', err);
     }
     this.applyVideoVisibility();
   }
@@ -27,11 +42,15 @@ export class Overlay {
   }
 
   applyVideoVisibility() {
-    const w = window.webgazer;
-    if (!w) return;
-    w.showVideo(this.videoVisible);
-    w.showFaceOverlay(this.videoVisible);
-    w.showFaceFeedbackBox(this.videoVisible);
+    try {
+      const w = window.webgazer;
+      if (!w) return;
+      if (typeof w.showVideo === 'function') w.showVideo(this.videoVisible);
+      if (typeof w.showFaceOverlay === 'function') w.showFaceOverlay(this.videoVisible);
+      if (typeof w.showFaceFeedbackBox === 'function') w.showFaceFeedbackBox(this.videoVisible);
+    } catch (err) {
+      console.warn('video visibility skipped', err);
+    }
   }
 
   drawGaze(x, y, confidence, fixation) {

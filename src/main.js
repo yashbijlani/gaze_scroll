@@ -352,13 +352,21 @@ async function onEnable() {
   trackingStartedAt = performance.now();
   stallWarned = false;
 
-  overlay.dockCameraPreview(
-    CONFIG.webgazer.videoViewerWidth,
-    CONFIG.webgazer.videoViewerHeight,
-  );
-  provider.subscribe(handleSample);
-  eventDetector.subscribe((evt) => lab.logEvent(evt));
+  // Subscribe first: samples must flow even if cosmetic preview docking
+  // fails below. The whole block is guarded so a preview/DOM failure can
+  // never wedge the app on the consent gate (button stuck on "Starting…").
+  try {
+    provider.subscribe(handleSample);
+    eventDetector.subscribe((evt) => lab.logEvent(evt));
+    overlay.dockCameraPreview(
+      CONFIG.webgazer.videoViewerWidth,
+      CONFIG.webgazer.videoViewerHeight,
+    );
+  } catch (err) {
+    console.warn('post-start UI setup issue (tracking continues)', err);
+  }
   els.consentGate.style.display = 'none';
+  els.btnEnable.textContent = 'Enable camera & tracking';
   setControlsEnabled(true);
   lab.setPill('tracking', 'tracking');
   setStatus('Tracking running. Click “Calibrate” for better accuracy.');
