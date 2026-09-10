@@ -93,7 +93,7 @@ function dot(w, x) {
 }
 
 export class RidgeGazeMapper {
-  constructor({ eyeW = 16, eyeH = 12, lambda = 1.0 } = {}) {
+  constructor({ eyeW = 16, eyeH = 12, lambda = 0.1 } = {}) {
     this.eyeW = eyeW;
     this.eyeH = eyeH;
     this.lambda = lambda;
@@ -113,11 +113,22 @@ export class RidgeGazeMapper {
 
   addSample(leftPatch, rightPatch, x, y) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-    const feats = concatEyes(
-      eyeFeatures(leftPatch, this.eyeW, this.eyeH),
-      eyeFeatures(rightPatch, this.eyeW, this.eyeH),
+    return this.addFeatureSample(
+      concatEyes(
+        eyeFeatures(leftPatch, this.eyeW, this.eyeH),
+        eyeFeatures(rightPatch, this.eyeW, this.eyeH),
+      ),
+      x,
+      y,
     );
-    this.samples.push({ feats, x, y });
+  }
+
+  // Direct feature-vector write (provider appends head-pose features).
+  addFeatureSample(feats, x, y) {
+    if (!Array.isArray(feats) || feats.length === 0) return false;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if (this.samples.length > 0 && feats.length !== this.samples[0].feats.length) return false;
+    this.samples.push({ feats: feats.slice(), x, y });
     if (this.samples.length > 2000) this.samples.shift();
     this.dirty = true;
     return true;
@@ -134,11 +145,19 @@ export class RidgeGazeMapper {
 
   // { x, y } or null when untrained/degenerate.
   predict(leftPatch, rightPatch) {
-    if (!this.ensureTrained()) return null;
-    const feats = concatEyes(
-      eyeFeatures(leftPatch, this.eyeW, this.eyeH),
-      eyeFeatures(rightPatch, this.eyeW, this.eyeH),
+    return this.predictFeats(
+      concatEyes(
+        eyeFeatures(leftPatch, this.eyeW, this.eyeH),
+        eyeFeatures(rightPatch, this.eyeW, this.eyeH),
+      ),
     );
+  }
+
+  // Predict from a prebuilt feature vector (e.g. eyes + head pose).
+  predictFeats(feats) {
+    if (!this.ensureTrained()) return null;
+    if (!Array.isArray(feats) || this.samples.length === 0) return null;
+    if (feats.length !== this.samples[0].feats.length) return null;
     const x = dot(this.wx, feats);
     const y = dot(this.wy, feats);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -153,13 +172,16 @@ export class RidgeGazeMapper {
   }
 
   // Persist/restore the learned mapping (features + targets, not images).
-  // Floats rounded to 4dp: a 45-tap session is ~140KB, inside localStorage.
+  // v2: feature vectors may include head-pose terms, so featDim is stored
+  // explicitly; v1 payloads (eye-only dims) are rejected → one
+  // recalibration after upgrade. Floats rounded to 4dp (~150KB/session).
   toJSON() {
     return {
-      version: 1,
+      version: 2,
       eyeW: this.eyeW,
       eyeH: this.eyeH,
       lambda: this.lambda,
+      featDim: this.samples.length > 0 ? this.samples[0].feats.length : null,
       samples: this.samples.map((s) => ({
         f: s.feats.map((v) => Math.round(v * 1e4) / 1e4),
         x: Math.round(s.x * 10) / 10,
@@ -169,14 +191,15 @@ export class RidgeGazeMapper {
   }
 
   static fromJSON(json) {
-    if (!json || json.version !== 1 || !Array.isArray(json.samples)) {
-      throw new Error('not a ridge-mapper v1 payload');
+    if (!json || json.version !== 2 || !Array.isArray(json.samples)) {
+      throw new Error('not a ridge-mapper v2 payload');
     }
-    const m = new RidgeGazeMapper({ eyeW: json.eyeW ?? 16, eyeH: json.eyeH ?? 12, lambda: json.lambda ?? 1 });
-    const dim = m.eyeW * m.eyeH * 2 + 1;
+    const m = new RidgeGazeMapper({ eyeW: json.eyeW ?? 16, eyeH: json.eyeH ?? 12, lambda: json.lambda ?? 0.1 });
     for (const s of json.samples) {
-      if (!Array.isArray(s.f) || s.f.length !== dim) continue;
+      if (!Array.isArray(s.f)) continue;
+      if (json.featDim != null && s.f.length !== json.featDim) continue;
       if (!Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
+      if (m.samples.length > 0 && s.f.length !== m.samples[0].feats.length) continue;
       m.samples.push({ feats: s.f.slice(), x: s.x, y: s.y });
     }
     m.dirty = m.samples.length > 0;

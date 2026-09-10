@@ -574,6 +574,14 @@ async function onEnable() {
         active === landmarkerProvider && restored
           ? ` Restored ${restored.restored} calibration samples from your last visit — no need to recalibrate.`
           : ' Click “Calibrate” for better accuracy.';
+      if (active === landmarkerProvider && restored) {
+        // The restored mapping works immediately; make the panels say so
+        // instead of showing a session counter stuck at 0.
+        tracker.calibratedCount = restored.restored;
+        els.calStatus.textContent =
+          `Restored ${restored.restored} calibration samples from last visit. ` +
+          `Recalibrate if accuracy feels off.`;
+      }
       setStatus(`Tracking running (${vw || '?'}×${vh || '?'} video).${restNote}`);
     }
     tracker.probePrediction().then((probe) => {
@@ -1057,6 +1065,24 @@ function init() {
     renderLogPanel();
   });
   if (els.btnDiag) els.btnDiag.addEventListener('click', copyDiagnostics);
+  // Implicit calibration (WebGazer-style self-training): people usually
+  // look where they click. Content clicks refine the mapping on-device;
+  // UI chrome, calibration, and replay clicks are excluded.
+  window.addEventListener(
+    'click',
+    (e) => {
+      try {
+        if (!trackingRunning || calibration.running || replaying) return;
+        if (getActiveProvider() !== landmarkerProvider) return;
+        if (!faceDetected()) return;
+        if (e.target?.closest?.('button, select, input, a, textarea, video, canvas')) return;
+        landmarkerProvider.observeClick(e.clientX, e.clientY);
+      } catch {
+        /* clicks must never break */
+      }
+    },
+    { capture: true },
+  );
   bindScrollControls();
   bindLabControls();
   startScrollLoop();

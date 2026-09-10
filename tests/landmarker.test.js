@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { eyeBox, buildEyeObjects, LandmarkerGazeProvider } from '../src/gaze/landmarker.js';
+import { eyeBox, buildEyeObjects, headFeatures, LandmarkerGazeProvider } from '../src/gaze/landmarker.js';
 import { EyeIndices } from '../src/overlay.js';
 
 // Synthetic 478-landmark cloud: tight left cluster + tight right cluster.
@@ -277,5 +277,39 @@ describe('LandmarkerGazeProvider failure reasons', () => {
     assert.equal(p2.storedCount(), 0);
     assert.equal(store['gazeScroll.landmarker.v1'] ?? null, null, 'reset clears persisted copy');
     delete globalThis.localStorage;
+  });
+});
+
+describe('headFeatures + observeClick', () => {
+  it(' head pose proxies are normalized and sane', () => {
+    const pts = fakePositions();
+    const h = headFeatures(pts, 640, 480);
+    assert.equal(h.length, 6);
+    // Face center mid-frame, size positive fraction, roll ≈ 0 (level eyes).
+    assert.ok(h[0] > 0.1 && h[0] < 0.6, `fcx ${h[0]}`);
+    assert.ok(h[1] > 0.1 && h[1] < 0.6, `fcy ${h[1]}`);
+    assert.ok(h[2] > 0 && h[2] < 1 && h[3] > 0 && h[3] < 1);
+    assert.ok(Math.abs(h[4]) < 0.3, `roll ≈ 0, got ${h[4]}`);
+    assert.deepEqual(headFeatures([], 640, 480), [0.5, 0.5, 0.25, 0.25, 0, 0.5]);
+  });
+
+  it('observeClick records an implicit sample when running', async () => {
+    const tracker = {
+      calibratedCount: 0,
+      async begin() {},
+      end() {},
+      computeConfidence: () => 0.9,
+    };
+    const p = new LandmarkerGazeProvider({
+      tracker,
+      smoother: { filter: (x, y) => ({ x, y }), reset() {} },
+      faceDetector: { detect: async () => ({ positions: fakePositions() }) },
+      getVideo: () => stubVideo,
+      createGrabber: stubGrabber,
+    });
+    assert.equal(await p.observeClick(640, 400), false, 'not running → ignored');
+    p.running = true;
+    assert.equal(await p.observeClick(640, 400), true);
+    assert.equal(p.storedCount(), 1);
   });
 });

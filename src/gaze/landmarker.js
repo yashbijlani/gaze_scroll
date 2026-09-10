@@ -17,6 +17,7 @@
 
 import { GazeProvider } from './provider.js';
 import { EyeIndices } from '../overlay.js';
+import { faceBoxOf } from './face.js';
 import { RidgeGazeMapper, eyeFeatures, concatEyes, medianFeatures, l1dist } from './ridge.js';
 
 const EYE_PAD_PX = 8;
@@ -24,6 +25,44 @@ const MIN_PATCH_PX = 4;
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
+}
+
+// Head-pose proxy features from 2D landmark geometry (all normalized):
+// face center (translation), face size (camera distance), eye-line roll,
+// eye height within the face. Lets the linear model separate head shifts
+// from eyeball rotation — the dominant real-world confound (leaning,
+// distance change, head turns). Pure; tested.
+export function headFeatures(positions, videoW, videoH) {
+  const fallback = [0.5, 0.5, 0.25, 0.25, 0, 0.5];
+  if (!Array.isArray(positions) || positions.length < 100 || videoW <= 0 || videoH <= 0) {
+    return fallback;
+  }
+  const mean = (indices) => {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const i of indices) {
+      const p = positions[i];
+      if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+      sx += p[0];
+      sy += p[1];
+      n++;
+    }
+    return n > 0 ? { x: sx / n, y: sy / n } : null;
+  };
+  const box = faceBoxOf(positions);
+  const L = mean(EyeIndices.left);
+  const R = mean(EyeIndices.right);
+  if (!box || box.w <= 0 || box.h <= 0 || !L || !R) return fallback;
+  const dx = R.x - L.x || 1;
+  return [
+    (box.x + box.w / 2) / videoW,
+    (box.y + box.h / 2) / videoH,
+    box.w / videoW,
+    box.h / videoH,
+    Math.atan2(R.y - L.y, dx),
+    (L.y + R.y) / 2 / videoH,
+  ];
 }
 
 // Pixel bbox of one eye's landmarks, padded + clamped to the frame.
@@ -113,6 +152,28 @@ export class LandmarkerGazeProvider extends GazeProvider {
     this.mapper.clear();
     this.smoother.reset();
     this.clearPersisted();
+  }
+
+  // Full feature vector: eye appearance + head-pose proxies. Returns null
+  // when the eyes are unusable (caller sets the reason).
+  fullFeats(positions, video) {
+    const eyes = buildEyeObjects(
+      positions,
+      video.videoWidth,
+      video.videoHeight,
+      this.createGrabber(video, this),
+    );
+    if (!eyes) return null;
+    return {
+      eyes,
+      feats: [
+        ...concatEyes(
+          eyeFeatures(eyes.left.patch, this.mapper.eyeW, this.mapper.eyeH),
+          eyeFeatures(eyes.right.patch, this.mapper.eyeW, this.mapper.eyeH),
+        ),
+        ...headFeatures(positions, video.videoWidth, video.videoHeight),
+      ],
+    };
   }
 
   // --- Calibration persistence (mapper only — features, never images). ---
@@ -215,21 +276,16 @@ export class LandmarkerGazeProvider extends GazeProvider {
         this.lastNullReason = 'no-face';
         return null;
       }
-      // Face observed (even if the regression can't predict yet — e.g.
-      // uncalibrated model). Without this, hasFace is never true and
+      // Face observed (even if the model can't predict yet — e.g.
+      // uncalibrated). Without this, hasFace is never true and
       // face-present nulls are indistinguishable from a dead camera.
       this.lastFaceT = performance.now();
-      const eyes = buildEyeObjects(
-        r.positions,
-        video.videoWidth,
-        video.videoHeight,
-        this.createGrabber(video, this),
-      );
-      if (!eyes) {
+      const full = this.fullFeats(r.positions, video);
+      if (!full) {
         this.lastNullReason = 'no-eyes';
         return null;
       }
-      const pred = this.mapper.predict(eyes.left.patch, eyes.right.patch);
+      const pred = this.mapper.predictFeats(full.feats);
       if (!pred) {
         this.lastNullReason = 'no-prediction';
         return null;
@@ -267,21 +323,10 @@ export class LandmarkerGazeProvider extends GazeProvider {
         const r = await this.faceDetector.detect(video, performance.now());
         if (!r || !r.positions || r.positions.length < 100) continue;
         sawFace = true;
-        const eyes = buildEyeObjects(
-          r.positions,
-          video.videoWidth,
-          video.videoHeight,
-          this.createGrabber(video, this),
-        );
-        if (!eyes) continue;
+        const full = this.fullFeats(r.positions, video);
+        if (!full) continue;
         sawEyes = true;
-        candidates.push({
-          eyes,
-          feats: concatEyes(
-            eyeFeatures(eyes.left.patch, this.mapper.eyeW, this.mapper.eyeH),
-            eyeFeatures(eyes.right.patch, this.mapper.eyeW, this.mapper.eyeH),
-          ),
-        });
+        candidates.push({ feats: full.feats });
         if (candidates.length >= attempts) break;
       }
       if (candidates.length < 3) {
@@ -292,9 +337,7 @@ export class LandmarkerGazeProvider extends GazeProvider {
       candidates.sort((a, b) => l1dist(a.feats, med) - l1dist(b.feats, med));
       const kept = candidates.slice(0, this.taps);
       const before = this.mapper.count;
-      for (const c of kept) {
-        this.mapper.addSample(c.eyes.left.patch, c.eyes.right.patch, x, y);
-      }
+      for (const c of kept) this.mapper.addFeatureSample(c.feats, x, y);
       const delta = this.mapper.count - before;
       if (delta <= 0) {
         this.lastNullReason = 'no-eyes';
@@ -309,6 +352,23 @@ export class LandmarkerGazeProvider extends GazeProvider {
       this.lastNullReason = 'no-eyes';
       console.warn('[landmarker] calibrateAt failed', err);
       return 0;
+    }
+  }
+
+  // WebGazer-style implicit training: people usually look where they
+  // click. Single tap, best-effort — never throws, never blocks the click.
+  async observeClick(x, y) {
+    try {
+      if (!this.running) return false;
+      const video = this.getVideo?.();
+      if (!video || video.videoWidth <= 0 || video.readyState < 2) return false;
+      const r = await this.faceDetector.detect(video, performance.now());
+      if (!r || !r.positions || r.positions.length < 100) return false;
+      const full = this.fullFeats(r.positions, video);
+      if (!full) return false;
+      return this.mapper.addFeatureSample(full.feats, x, y);
+    } catch {
+      return false;
     }
   }
 

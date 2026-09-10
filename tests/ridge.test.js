@@ -101,7 +101,8 @@ describe('persistence + robust stats', () => {
   it('fromJSON rejects garbage', () => {
     assert.throws(() => RidgeGazeMapper.fromJSON(null));
     assert.throws(() => RidgeGazeMapper.fromJSON({ version: 99, samples: [] }));
-    const m = RidgeGazeMapper.fromJSON({ version: 1, samples: [{ f: [1], x: 0, y: 0 }] });
+    assert.throws(() => RidgeGazeMapper.fromJSON({ version: 1, samples: [] }), 'v1 retired');
+    const m = RidgeGazeMapper.fromJSON({ version: 2, featDim: 385, samples: [{ f: [1], x: 0, y: 0 }] });
     assert.equal(m.count, 0, 'wrong-dim rows skipped');
   });
 

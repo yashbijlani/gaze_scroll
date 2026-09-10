@@ -40,7 +40,8 @@ patches, but diagnostics proved that object dead too (`ctor: ''`,
 `addData` silently dropping, predictions throwing on a null internal
 canvas). So the regression is now ours as well:
 
-- Features: each eye patch → 16×12 grayscale + bias (385 dims).
+- Features: each eye patch → 16×12 grayscale + bias + 6 head-pose terms
+  (391 dims).
 - Train: ridge `(XᵀX + λI) w = Xᵀt` per axis, Gaussian elimination with
   partial pivoting (~50ms for a 45-tap calibration; lazy on first predict).
 - Predict: two dot products (~microseconds at 15Hz).
@@ -49,6 +50,19 @@ canvas). So the regression is now ours as well:
   full session) and restores on next visit; Reset clears it.
 - Robust taps: up to taps+2 observations per point, median-kept best
   (blinks and mid-saccade frames dropped).
+- Head-pose features (your suggestion — adopted): face center/size,
+  eye-line roll, and eye height appended to every feature vector, so the
+  linear model can separate head shifts from eyeball rotation instead of
+  confounding them. Translation + distance + in-plane roll cover the
+  dominant real-world shifts; pure yaw-from-2D was judged too fragile.
+- λ = 0.1 (was 1.0): with ~45 samples in ~391 dims the system is
+  underdetermined, and λ = 1 shrank predictions toward the screen center
+  (the "must look above the laptop" compression). Lower λ trusts
+  calibration more; overfit risk is bounded by the outlier drop.
+- Implicit training: content clicks are recorded as (gaze-patches →
+  click-point) samples WebGazer-style — you look where you click, so
+  everyday use keeps training. UI chrome/calibration/replay clicks
+  excluded. Same 2000-sample cap, retrains lazily.
 
 Selectable via Controls → Estimator (`landmarker` default, `webgazer`
 classic for builds whose bundle is healthy). Both emit the identical
