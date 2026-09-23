@@ -73,13 +73,83 @@ Selectable via Controls → Estimator (`landmarker` default, `webgazer`
 classic for builds whose bundle is healthy). Both emit the identical
 normalized sample contract, so everything downstream is untouched.
 
-## 1. Smoothing — One Euro filter (`smoothing.js`)
+## 1. Smoothing — constant-velocity Kalman (`gaze/filters.js`)
 
-Casiez et al. 2012 (CHI). Adaptive low-pass: low cutoff at rest (kills
-jitter), high cutoff during fast movement (kills lag). Defaults
-`minCutoff 1.0, beta 0.3, dCutoff 1.0` — carried over from Phase 0; retune
-from recorded sessions (ROADMAP Phase 1). The filter re-acquires after any
->500ms gap so it never drags across tracking loss.
+**Default changed by the accuracy overhaul.** The old default was One Euro
+(`minCutoff 1.0, beta 0.3`), which the benchmark showed to be effectively a
+**no-op**: it cut only ~5% of fixation jitter because the derivative estimate
+was itself dominated by the noise it was meant to reject.
+
+`filters.js` provides `ema`, `oneeuro`, `kalman`, `none` behind one interface.
+Benchmark (identical noisy fixation + 300px step):
+
+| Filter | jitter cut | step latency |
+|---|---|---|
+| One Euro (1.0, 0.3) — old | 5% | 33ms |
+| EMA α=0.2 | 85% | 363ms |
+| **Kalman q=10 r=150 — new default** | **83%** | **66ms** |
+
+Kalman (constant-velocity, per axis) wins the jitter/latency tradeoff: a
+predict step (`pos += vel·dt`) plus a scalar measurement update. It re-acquires
+after any >500ms gap. EMA remains a cheap fallback; One Euro is available but
+needs `beta`/`dCutoff` retuned per noise level.
+
+## 1.5 Geometry estimator — accuracy overhaul (`gaze/features.js`, `mapping.js`, `fusion.js`, `confidence.js`, `geometryProvider.js`)
+
+The previous estimator fed raw 16×12 grayscale eye patches (391 dims) to a
+single global linear ridge. That confounds head pose with eyeball rotation and
+is underdetermined at calibration sizes. The default estimator is now
+geometric and personalized:
+
+- **Features** (21 dims, `features.js`): per eye — iris offset inside the eye
+  measured in a roll-invariant local frame (corner axis), eye aspect ratio,
+  eye width/height relative to inter-ocular distance, iris diameter; global —
+  face center/scale, eye-line roll, and yaw/pitch proxies from nose-vs-eye
+  geometry. Requires `refineLandmarks: true` for iris; degrades to lid/corner
+  geometry without it.
+- **Mapping** (`mapping.js`): per-user ridge over standardized features with an
+  **unpenalized bias**, a **variance floor** (`stdFloor`, default 0.05) and
+  **z-clip** (default 4). The floor/clip matter: head channels are near-constant
+  during a still calibration, and without a floor a small run-time head movement
+  becomes a huge z-score and the model extrapolates wildly. Models: `affine`
+  (default), `poly2`, tiny `mlp`. The benchmark found affine the best
+  accuracy/compute tradeoff.
+- **Two-eye model** (`fusion.js`): the **combined mapper is primary** (it
+  cancels common-mode head pose using both eyes); per-eye mappers only measure
+  **agreement** and, when one eye is clearly degraded (low landmark/EAR
+  quality), provide a single-eye fallback with reduced confidence. Benchmark:
+  two-eye affine median 82px / P95 194px / bottom-zone precision 80%, and
+  under heavy occlusion 28% lower median than a combined-only mapper.
+- **Confidence** (`confidence.js`): weighted geometric mean of presence,
+  landmark coverage/iris availability, eyelid visibility, two-eye agreement,
+  feature novelty, head-pose deviation from the calibration baseline, and
+  calibration residual — with an extra penalty from the model's own sigma.
+  Below `intent.minConfidence` the intent engine answers UNCERTAIN and the
+  scroller never acts.
+
+Calibration is unchanged in flow (5/9-point grid, 5 taps/point, median-outlier
+drop) but now stores the 21-dim geometric vectors and recomputes a head
+baseline + residual after each point.
+
+## 1.6 Adaptive safe region (`gaze/safeRegion.js`)
+
+The lower scroll zone is a first-class, measured concept rather than a fixed
+140px band:
+
+- nominal `fraction` (default 0.2 = bottom 20%), configurable;
+- the effective boundary is pushed deeper by `sigmaK × measuredErrorPx`, so a
+  prediction inside the zone is truly inside with higher probability as error
+  grows;
+- **hysteresis**: enter deeper than exit (`enterMargin`/`exitMargin`), so
+  boundary jitter cannot toggle scrolling;
+- **dwell** (`dwellMs`, default 450) is the glance-vs-gaze discriminator;
+- confidence gate: uncertain gaze never counts as intent.
+
+`main.js` sizes the event detector's edge band from the calibration residual
+(`applyAdaptiveSafeRegion`), so the pipeline and the metric agree. The
+benchmark sweeps the fraction and reports zone precision/recall plus
+false-scroll/missed-scroll; under the measured error, 20% is the largest zone
+with zero false-scroll.
 
 ## 2. Velocity — EMA of finite differences (`gaze/velocity.js`)
 

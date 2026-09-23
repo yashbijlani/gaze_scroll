@@ -16,6 +16,7 @@ import { CalibrationFlow } from './calibration.js';
 import { GazeLogger } from './logger.js';
 import { WebGazerProvider } from './gaze/provider.js';
 import { LandmarkerGazeProvider } from './gaze/landmarker.js';
+import { GeometryGazeProvider } from './gaze/geometryProvider.js';
 import { GazeEventDetector } from './gaze/events.js';
 import { IntentEngine } from './gaze/intent.js';
 import { ScrollController, ScrollModes } from './gaze/scroll.js';
@@ -92,11 +93,31 @@ const landmarkerProvider = new LandmarkerGazeProvider({
   faceDetector,
   getVideo: activeVideo,
 });
-// Estimator choice (Controls select). Landmarker drives WebGazer's own
-// ridge regression with our working landmarks; classic uses WebGazer's
-// bundled detector loop. Read live at (re)start and calibration time.
+// Accuracy-overhaul estimator (default): normalized geometry + two-eye
+// personalized mapping + explicit confidence + Kalman filter.
+const geometryProvider = new GeometryGazeProvider({
+  tracker,
+  faceDetector,
+  getVideo: activeVideo,
+  mapperOpts: { ...CONFIG.gaze.mapper },
+  filterKind: CONFIG.gaze.filter.kind,
+  filterOpts: { ...CONFIG.gaze.filter },
+});
+// Estimator choice (Controls select). 'geometry' is the overhaul default;
+// 'landmarker' keeps the legacy appearance-patch ridge; 'webgazer' uses
+// WebGazer's bundled detector loop. Read live at (re)start and calibration.
 function getActiveProvider() {
-  return (CONFIG.gaze?.provider ?? 'landmarker') === 'webgazer' ? provider : landmarkerProvider;
+  const which = CONFIG.gaze?.provider ?? 'geometry';
+  if (which === 'webgazer') return provider;
+  if (which === 'landmarker') return landmarkerProvider;
+  return geometryProvider;
+}
+// Live prediction from whichever estimator is active (calibration quality).
+function predictActive() {
+  const a = getActiveProvider();
+  if (a === geometryProvider) return geometryProvider.predictOnce();
+  if (a === landmarkerProvider) return landmarkerProvider.predictOnce();
+  return null;
 }
 function webgazerStoredCount() {
   try {
@@ -280,6 +301,30 @@ function calQualityLabel() {
   if (q.label === 'skipped') return `skipped (${q.points} pts)`;
   if (q.meanErrPx != null) return `${q.label} (~${q.meanErrPx}px)`;
   return q.label;
+}
+
+// Adaptive safe region: size the bottom/top edge band from the measured
+// model error. More error → deeper band so a prediction inside the zone is
+// truly inside with high probability. The nominal fraction (default 20%) and
+// dwell/hysteresis live in CONFIG.safeRegion; events.js consumes the
+// resulting pixel band. Returns the applied values for the Lab.
+function applyAdaptiveSafeRegion() {
+  const h = window.innerHeight || 800;
+  const sr = CONFIG.safeRegion;
+  let sigmaPx = null;
+  const active = getActiveProvider();
+  if (active === geometryProvider && Number.isFinite(geometryProvider.calRms)) {
+    sigmaPx = geometryProvider.calRms;
+  } else if (calibration.lastQuality?.meanErrPx != null) {
+    sigmaPx = calibration.lastQuality.meanErrPx;
+  }
+  const frac = Math.max(
+    sr.minFraction,
+    Math.min(sr.maxFraction, sr.fraction + (sigmaPx != null ? (sr.sigmaK * sigmaPx) / h : 0)),
+  );
+  CONFIG.events.edgeBandPx = Math.max(60, Math.round(frac * h));
+  CONFIG.events.edgeDwellMs = sr.dwellMs;
+  return { fraction: frac, bandPx: CONFIG.events.edgeBandPx, sigmaPx };
 }
 
 // Face presence from either channel (sample eye features or landmarks).
@@ -469,10 +514,10 @@ async function onEnable() {
   els.btnEnable.textContent = 'Starting…';
   const START_TIMEOUT_MS = 45000;
   let active = getActiveProvider();
-  // Start-time escape hatch: the landmarker estimator is useless when its
-  // model failed to load — fall back to classic up front, loudly.
-  if (active === landmarkerProvider && faceDetector.failed) {
-    console.warn('[gaze] landmarker model failed, starting with webgazer classic', faceDetector.failed);
+  // Start-time escape hatch: the geometry/landmarker estimators are useless
+  // when the face model failed to load — fall back to classic up front, loudly.
+  if ((active === landmarkerProvider || active === geometryProvider) && faceDetector.failed) {
+    console.warn('[gaze] face model failed, starting with webgazer classic', faceDetector.failed);
     CONFIG.gaze.provider = 'webgazer';
     if (els.selProvider) els.selProvider.value = 'webgazer';
     setStatus(
@@ -558,6 +603,7 @@ async function onEnable() {
   els.btnEnable.textContent = 'Enable camera & tracking';
   setControlsEnabled(true);
   lab.setPill('tracking', 'tracking');
+  applyAdaptiveSafeRegion();
   // Report what actually came up: video element + stream liveness now, and
   // one probed prediction to capture the real detector error (if any) while
   // the user can still read it — not minutes later when the loop dies.
@@ -571,12 +617,12 @@ async function onEnable() {
       setStatus('Tracking started, but the camera track is not live yet — waiting for first frames…');
     } else {
       const [vw, vh] = v.videoSize;
-      const restored = landmarkerProvider.restoredInfo;
+      const restored = active.restoredInfo;
       const restNote =
-        active === landmarkerProvider && restored
+        restored
           ? ` Restored ${restored.restored} calibration samples from your last visit — no need to recalibrate.`
           : ' Click “Calibrate” for better accuracy.';
-      if (active === landmarkerProvider && restored) {
+      if (restored) {
         // The restored mapping works immediately; make the panels say so
         // instead of showing a session counter stuck at 0.
         tracker.calibratedCount = restored.restored;
@@ -586,15 +632,15 @@ async function onEnable() {
       }
       setStatus(`Tracking running (${vw || '?'}×${vh || '?'} video).${restNote}`);
     }
-    if (active === landmarkerProvider) {
+    if (active === geometryProvider || active === landmarkerProvider) {
       // Probe our own loop, not WebGazer's (its probe is meaningless here).
       // Null with an empty model is expected pre-calibration — not an error.
-      landmarkerProvider.predictOnce().then((p) => {
-        console.info('[gaze] prediction probe', p ? 'ok' : landmarkerProvider.lastNullReason);
-        if (!p && landmarkerProvider.storedCount() > 0) {
+      active.predictOnce().then((p) => {
+        console.info('[gaze] prediction probe', p ? 'ok' : active.lastNullReason);
+        if (!p && active.storedCount() > 0) {
           setStatus(
             `Camera live and calibrated, but no gaze right now ` +
-              `(${landmarkerProvider.lastNullReason ?? 'unknown'}). Face the camera; ` +
+              `(${active.lastNullReason ?? 'unknown'}). Face the camera; ` +
               `brief dropouts coast on the last position.`,
           );
         }
@@ -620,9 +666,7 @@ async function onCalibrate() {
   els.btnCalibrate.disabled = true;
   lab.setPill('calibrating', 'calibrating');
   // Live-error source matches the active estimator.
-  calibration.setPredictor(
-    getActiveProvider() === landmarkerProvider ? () => landmarkerProvider.predictOnce() : null,
-  );
+  calibration.setPredictor(predictActive);
   // Append semantics: runs accumulate (head features + outlier drop keep
   // old data useful); Reset is the only wipe. Pause auto-scroll while the
   // layer is open — staring at edge dots must not scroll the page out
@@ -639,8 +683,10 @@ async function onCalibrate() {
   });
   const q = calibration.lastQuality;
   let persistNote = '';
-  if (getActiveProvider() === landmarkerProvider && (q?.stored ?? 0) > 0) {
-    persistNote = landmarkerProvider.save() ? ' Saved for next visit.' : '';
+  if ((q?.stored ?? 0) > 0) {
+    const saver = getActiveProvider();
+    if (saver === geometryProvider) persistNote = saver.save() ? ' Saved for next visit.' : '';
+    else if (saver === landmarkerProvider) persistNote = saver.save() ? ' Saved for next visit.' : '';
   }
   els.calStatus.textContent =
     `Calibration ${q?.label ?? 'done'}: ${done} points recorded ` +
@@ -655,12 +701,14 @@ async function onCalibrate() {
     scrollController.setEnabled(true);
     if (els.chkAutoscroll) els.chkAutoscroll.checked = true;
   }
+  applyAdaptiveSafeRegion();
   lab.setPill('tracking', 'tracking');
 }
 
 async function onResetCalibration() {
   await tracker.clear();
   landmarkerProvider.reset();
+  geometryProvider.reset();
   smoother.reset();
   eventDetector.reset();
   intentEngine.reset();
@@ -685,6 +733,11 @@ async function onRestartCamera() {
     await landmarkerProvider.stop();
   } catch (err) {
     console.warn('landmarker stop during restart', err);
+  }
+  try {
+    await geometryProvider.stop();
+  } catch (err) {
+    console.warn('geometry stop during restart', err);
   }
   trackingRunning = false;
   lastGazeT = 0;
@@ -750,7 +803,7 @@ function bindScrollControls() {
     });
   }
   if (els.selProvider) {
-    els.selProvider.value = CONFIG.gaze?.provider ?? 'landmarker';
+    els.selProvider.value = CONFIG.gaze?.provider ?? 'geometry';
     els.selProvider.addEventListener('change', (e) => {
       CONFIG.gaze.provider = e.target.value;
       setStatus(
@@ -984,6 +1037,7 @@ function snapshotConfig() {
     velocity: { ...CONFIG.velocity },
     fixation: { ...CONFIG.fixation },
     events: { ...CONFIG.events },
+    safeRegion: { ...CONFIG.safeRegion },
   };
 }
 
@@ -1010,7 +1064,7 @@ function buildDiagnostics() {
     webgazer,
     previewFallback: !!overlay.fallbackStream,
     face: { state: faceDetector.state, source: lastFaceSource },
-    estimator: CONFIG.gaze?.provider ?? 'landmarker',
+    estimator: CONFIG.gaze?.provider ?? 'geometry',
     errors: errorLog.slice(-12),
     calibration: calibration.lastQuality,
     scroll: { mode: scrollController.mode, autoScroll, velocity: lastScrollVel },
@@ -1055,8 +1109,14 @@ function init() {
   setControlsEnabled(false);
   calibration.setFaceCheck(() => faceDetected());
   calibration.setRecorder(async (x, y) => {
+    const active = getActiveProvider();
+    // Geometry: verified write through normalized landmark features.
+    if (active === geometryProvider) {
+      const n = await geometryProvider.calibrateAt(x, y);
+      return n > 0 ? { stored: n, detail: null } : { stored: 0, detail: geometryProvider.lastNullReason ?? 'unknown' };
+    }
     // Landmarker: verified write through our own eye patches.
-    if (getActiveProvider() === landmarkerProvider) {
+    if (active === landmarkerProvider) {
       const n = await landmarkerProvider.calibrateAt(x, y);
       if (n > 0) return { stored: n, detail: null };
       let detail = landmarkerProvider.lastNullReason ?? 'unknown';
@@ -1084,9 +1144,11 @@ function init() {
       ? { stored: grown, detail: null }
       : { stored: 0, detail: 'webgazer stored 0 (its detector sees no eyes)' };
   });
-  calibration.setPredictor(null); // default: WebGazer's own prediction
+  calibration.setPredictor(predictActive);
   calibration.setCounter(() => {
-    if (getActiveProvider() === landmarkerProvider) return landmarkerProvider.storedCount();
+    const active = getActiveProvider();
+    if (active === geometryProvider) return geometryProvider.storedCount();
+    if (active === landmarkerProvider) return landmarkerProvider.storedCount();
     return webgazerStoredCount();
   });
   els.btnEnable.addEventListener('click', onEnable);
@@ -1112,10 +1174,11 @@ function init() {
     (e) => {
       try {
         if (!trackingRunning || calibration.running || replaying) return;
-        if (getActiveProvider() !== landmarkerProvider) return;
+        const active = getActiveProvider();
+        if (active !== geometryProvider && active !== landmarkerProvider) return;
         if (!faceDetected()) return;
         if (e.target?.closest?.('button, select, input, a, textarea, video, canvas')) return;
-        landmarkerProvider.observeClick(e.clientX, e.clientY);
+        active.observeClick(e.clientX, e.clientY);
       } catch {
         /* clicks must never break */
       }
@@ -1202,10 +1265,13 @@ try {
     calibration,
     faceDetector,
     landmarkerProvider,
+    geometryProvider,
     tracker,
     eventDetector,
     intentEngine,
     getActiveProvider,
+    predictActive,
+    applyAdaptiveSafeRegion,
     webgazerStoredCount,
     faceDetected,
     buildDiagnostics,

@@ -124,6 +124,9 @@ export class StandaloneFaceDetector {
         numFaces: 1,
         outputFaceBlendshapes: false,
         outputFacialTransformationMatrixes: false,
+        // Iris landmarks (468..477) — required by the geometry estimator's
+        // normalized iris features. Default false in MediaPipe.
+        refineLandmarks: this.cfg.refineLandmarks !== false,
       };
       try {
         this.landmarker = await vision.FaceLandmarker.createFromOptions(resolver, options);

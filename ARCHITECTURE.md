@@ -10,7 +10,11 @@ webcam → gaze provider → filter → event detector → intent engine
 
 Phase 0 (MVP: track + calibrate + log, no auto-scroll) is complete; this
 document covers the full experimental system. Heuristics live in
-ALGORITHMS.md, comparison protocol in EXPERIMENTS.md.
+ALGORITHMS.md, comparison protocol in EXPERIMENTS.md. The gaze-accuracy
+overhaul — estimator replacement, two-eye fusion, confidence, adaptive safe
+region, and the headless benchmark — is documented in
+`ACCURACY_OVERHAUL.md`, `ACCURACY_ROADMAP.md`, and `BENCHMARK_RESULTS.md`;
+the default estimator is now the geometry provider (§3.1).
 
 ---
 
@@ -235,8 +239,15 @@ subject of the first post-MVP milestone.
 | `src/camera.js` | `getUserMedia` capability detection. |
 | `src/tracker.js` | WebGazer wrapper: init, gaze subscription, calibration recording, confidence proxy. |
 | `src/gaze/provider.js` | `GazeProvider` abstraction: `WebGazerProvider` (normalized stream) + `MockProvider` (tests/replay). |
-| `src/gaze/landmarker.js` | `LandmarkerGazeProvider`: own eye patches + own ridge map (default estimator). |
-| `src/gaze/ridge.js` | `RidgeGazeMapper`: grayscale eye features, ridge train/predict, pure + tested. |
+| `src/gaze/geometryProvider.js` | `GeometryGazeProvider`: **default estimator** — features → two-eye affine map → confidence → Kalman. |
+| `src/gaze/features.js` | Normalized geometric eye features (roll-invariant iris, EAR, head pose). |
+| `src/gaze/mapping.js` | `GazeMapper` (affine/poly2/tiny MLP) + standardization/robust ridge + uncertainty. |
+| `src/gaze/fusion.js` | Two-eye model: combined primary + agreement/occlusion fallback. |
+| `src/gaze/confidence.js` | Explicit confidence from quality/agreement/novelty/head/calibration. |
+| `src/gaze/filters.js` | EMA / One Euro / Kalman behind one interface + jitter/latency metrics. |
+| `src/gaze/safeRegion.js` | Adaptive lower zone + hysteresis + dwell + zone/scroll metrics. |
+| `src/gaze/landmarker.js` | Legacy `LandmarkerGazeProvider`: own eye patches + own ridge map. |
+| `src/gaze/ridge.js` | Legacy `RidgeGazeMapper`: grayscale eye features, ridge train/predict. |
 | `src/gaze/velocity.js` | EMA velocity/speed + direction persistence. |
 | `src/smoothing.js` | One Euro filter (per-axis) for low-lag jitter reduction. |
 | `src/fixation.js` | Dispersion-threshold (I-DT) fixation/saccade classifier. |

@@ -26,6 +26,10 @@ export const CONFIG = {
     enabled: true,
     detectIntervalMs: 150,
     delegate: 'GPU', // auto-retries CPU on failure
+    // Iris landmarks (468..477) are required by the geometry estimator's
+    // normalized iris features. Adds a little inference cost; without it the
+    // mapper degrades to lid/corner geometry.
+    refineLandmarks: true,
     bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs',
     wasmBase: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
     modelUrl:
@@ -96,10 +100,45 @@ export const CONFIG = {
     panelRefreshMs: 100,
   },
   gaze: {
-    // Gaze estimator. 'landmarker' drives WebGazer's ridge regression with
-    // eye patches cut from our own working landmarks (see gaze/landmarker.js);
-    // 'webgazer' uses WebGazer's bundled detector loop (needs its model
-    // files healthy). Switch takes effect on (re)start.
-    provider: 'landmarker',
+    // Gaze estimator:
+    //   'geometry'  — normalized geometric features + two-eye personalized
+    //                 mapping + explicit confidence (accuracy overhaul; default)
+    //   'landmarker'— legacy: own eye patches into a ridge regression
+    //   'webgazer'  — WebGazer's bundled detector loop
+    // Switch takes effect on (re)start.
+    provider: 'geometry',
+    // Mapping model for the geometry provider. Benchmark (BENCHMARK_RESULTS.md)
+    // found affine + head channels with a variance floor to generalize best;
+    // poly2/MLP did not beat it. Two-eye fusion improves tail error and
+    // bottom-zone precision at a small median cost (product priority).
+    mapper: {
+      model: 'affine', // 'affine' | 'poly2' | 'mlp'
+      lambda: 1.0,
+      stdFloor: 0.05,
+      clipZ: 4,
+    },
+    // Temporal filter: 'kalman' | 'oneeuro' | 'ema' | 'none'.
+    // Kalman cut ~83% of fixation jitter at 66ms step latency; the old
+    // One Euro defaults cut only ~5% (they were effectively a no-op).
+    filter: {
+      kind: 'kalman',
+      processNoise: 10,
+      measurementNoise: 150,
+    },
+  },
+  safeRegion: {
+    // Adaptive lower scroll zone. The nominal 20% hypothesis is configurable
+    // and the effective boundary is pushed deeper by sigmaK * measured error
+    // (px) so a prediction inside the zone is truly inside with high
+    // probability. Hysteresis (exit shallower than enter) prevents boundary
+    // jitter from toggling scroll; the dwell timer is the glance discriminator.
+    fraction: 0.2,
+    enterMargin: 0.02,
+    exitMargin: 0.06,
+    dwellMs: 450,
+    minConfidence: 0.4,
+    sigmaK: 1.3,
+    minFraction: 0.12,
+    maxFraction: 0.3,
   },
 };

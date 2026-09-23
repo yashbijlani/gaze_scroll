@@ -7,7 +7,15 @@ movement, then scrolls smoothly. Brief glances never scroll.
 **Pipeline:** webcam → gaze estimation → calibration → filtering →
 fixation/movement analysis → intent engine → scroll controller → webpage.
 See `ARCHITECTURE.md`; heuristics and thresholds in `ALGORITHMS.md`;
-comparison protocol in `EXPERIMENTS.md`.
+comparison protocol in `EXPERIMENTS.md`; the accuracy overhaul and its
+measurements in `ACCURACY_OVERHAUL.md`, `ACCURACY_ROADMAP.md`, and
+`BENCHMARK_RESULTS.md`.
+
+The default gaze estimator is **geometry** (`src/gaze/geometryProvider.js`):
+normalized geometric eye/head features → a per-user two-eye affine mapping →
+explicit confidence → a constant-velocity Kalman filter. The legacy
+appearance-patch estimator and WebGazer classic remain selectable in Controls
+for side-by-side comparison.
 
 ## Run
 
@@ -15,7 +23,8 @@ comparison protocol in `EXPERIMENTS.md`.
 cd gaze_scroll
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 27 unit tests (synthetic gaze sequences)
+npm test           # 112 unit tests (synthetic gaze sequences + pure algorithms)
+node bench/run.js  # regenerate BENCHMARK_RESULTS.md (no camera needed)
 npm run build
 ```
 
@@ -83,15 +92,23 @@ src/overlay.js      camera preview + gaze cursor
 src/calibration.js  guided N-point flow + quality score
 src/logger.js       sample ring buffer + CSV export
 src/lab.js          Gaze Lab panel controller
-src/gaze/provider.js   GazeProvider / WebGazerProvider / MockProvider
-src/gaze/landmarker.js   LandmarkerGazeProvider (default gaze estimator)
-src/gaze/ridge.js        RidgeGazeMapper (own eye→screen regression)
-src/gaze/velocity.js   EMA velocity + direction persistence
-src/gaze/events.js     fixation/movement/edge-dwell/tracking-loss events
-src/gaze/intent.js     evidence-weighted intent + hysteresis
-src/gaze/scroll.js     discrete/smooth/edge/reading/predictive controller
-src/gaze/reading.js    reading-progression tracker
-src/gaze/dom.js        elementFromPoint gaze-target classification
-src/gaze/session.js    SessionRecorder + ReplayDriver
-tests/              synthetic-sequence unit tests (node --test)
+src/gaze/provider.js        GazeProvider / WebGazerProvider / MockProvider
+src/gaze/geometryProvider.js GeometryGazeProvider (default estimator)
+src/gaze/features.js        normalized geometric features + head pose
+src/gaze/mapping.js         GazeMapper (affine/poly2/tiny MLP) + scaler
+src/gaze/fusion.js          two-eye model (agreement / occlusion fallback)
+src/gaze/confidence.js      explicit gaze confidence
+src/gaze/filters.js         EMA / One Euro / Kalman
+src/gaze/safeRegion.js      adaptive safe region + hysteresis + metrics
+src/gaze/landmarker.js      legacy LandmarkerGazeProvider (appearance patches)
+src/gaze/ridge.js           legacy ridge over grayscale eye patches
+src/gaze/velocity.js        EMA velocity + direction persistence
+src/gaze/events.js          fixation/movement/edge-dwell/tracking-loss events
+src/gaze/intent.js          evidence-weighted intent + hysteresis
+src/gaze/scroll.js          discrete/smooth/edge/reading/predictive controller
+src/gaze/reading.js         reading-progression tracker
+src/gaze/dom.js             elementFromPoint gaze-target classification
+src/gaze/session.js         SessionRecorder + ReplayDriver
+bench/                headless simulator, metrics, experiment runner
+tests/                synthetic-sequence + pure-algorithm unit tests
 ```
